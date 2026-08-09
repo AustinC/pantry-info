@@ -1,0 +1,23 @@
+{
+  "manifest_version": 3,
+  "name": "pantry-info exporter",
+  "version": "0.1.0",
+  "description": "Export the recipe on the current page for import into your pantry-info database.",
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "pantry-info-exporter@localhost",
+      "strict_min_version": "115.0"
+    }
+  },
+  "permissions": ["activeTab", "scripting", "downloads", "storage", "clipboardWrite"],
+  "host_permissions": ["http://127.0.0.1/*", "http://localhost/*"],
+  "action": {
+    "default_title": "Export recipe to pantry-info",
+    "default_popup": "popup.html",
+    "default_icon": "icons/icon.svg"
+  },
+  "icons": {
+    "48": "icons/icon.svg",
+    "96": "icons/icon.svg"
+  }
+}

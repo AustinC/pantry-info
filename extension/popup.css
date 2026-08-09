@@ -1,0 +1,129 @@
+:root {
+  --bg: #22262d;
+  --panel: #2b3038;
+  --line: #3a414b;
+  --text: #e6e9ed;
+  --muted: #9aa4b1;
+  --accent: #4fa3d1;
+  --good: #6cc17f;
+  --bad: #d97070;
+  --warn: #d7a94b;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  width: 320px;
+  margin: 0;
+  padding: 12px;
+  background: var(--bg);
+  color: var(--text);
+  font: 13px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+
+header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 10px;
+}
+
+h1 {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--accent);
+}
+
+.conn {
+  font-size: 11px;
+  padding: 2px 7px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  color: var(--muted);
+}
+.conn.up   { color: var(--good); border-color: rgba(108, 193, 127, 0.45); }
+.conn.down { color: var(--muted); }
+
+.status {
+  padding: 9px 10px;
+  border-radius: 6px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  color: var(--muted);
+}
+.status.error   { color: var(--bad); border-color: rgba(217, 112, 112, 0.4); }
+.status.success { color: var(--good); border-color: rgba(108, 193, 127, 0.4); }
+.status.working { color: var(--warn); }
+.status[hidden] { display: none; }
+
+.preview {
+  padding: 10px;
+  border-radius: 6px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  margin-bottom: 10px;
+}
+.preview[hidden] { display: none; }
+
+.title {
+  font-weight: 600;
+  margin-bottom: 3px;
+  overflow-wrap: anywhere;
+}
+
+.meta { font-size: 11.5px; color: var(--muted); }
+
+.actions { margin-top: 10px; }
+.actions[hidden] { display: none; }
+
+.row {
+  display: flex;
+  gap: 8px;
+  margin-top: 8px;
+}
+.row button { flex: 1; }
+
+button {
+  width: 100%;
+  padding: 8px 10px;
+  border-radius: 6px;
+  border: 1px solid var(--line);
+  background: #333944;
+  color: var(--text);
+  font: inherit;
+  cursor: pointer;
+}
+button:hover:not(:disabled) { border-color: var(--accent); }
+button:disabled { opacity: 0.5; cursor: default; }
+
+button.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #12222c;
+  font-weight: 600;
+}
+button.primary:hover:not(:disabled) { filter: brightness(1.08); }
+
+footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 12px;
+  padding-top: 9px;
+  border-top: 1px solid var(--line);
+  font-size: 11.5px;
+  color: var(--muted);
+}
+
+input[type="number"] {
+  width: 76px;
+  padding: 4px 6px;
+  border-radius: 5px;
+  border: 1px solid var(--line);
+  background: var(--bg);
+  color: var(--text);
+  font: inherit;
+}

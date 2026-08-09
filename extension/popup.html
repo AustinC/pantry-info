@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <header>
+    <h1>pantry-info</h1>
+    <span id="conn" class="conn checking" title="local receiver status">checking…</span>
+  </header>
+
+  <section id="status" class="status loading">Reading the page…</section>
+
+  <section id="preview" class="preview" hidden>
+    <div id="title" class="title"></div>
+    <div id="meta" class="meta"></div>
+  </section>
+
+  <section id="actions" class="actions" hidden>
+    <button id="send" class="primary">Send to pantry-info</button>
+    <div class="row">
+      <button id="save">Save .json</button>
+      <button id="copy">Copy JSON</button>
+    </div>
+  </section>
+
+  <footer>
+    <label for="port">Receiver port</label>
+    <input id="port" type="number" min="1" max="65535" value="8787">
+  </footer>
+
+  <!-- extract.js only defines the extractor; popup.js hands the function itself
+       to scripting.executeScript, which serialises it into the page. -->
+  <script src="extract.js"></script>
+  <script src="popup.js"></script>
+</body>
+</html>
