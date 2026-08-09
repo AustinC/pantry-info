@@ -51,15 +51,15 @@ Deno.test("returns everything for an empty query", () => {
   assertEquals(search(ROWS, "").length, ROWS.length);
 });
 
-Deno.test("starred recipes sort first, ahead of any stronger match", () => {
-  // Unstarred, row 1 ranks above row 3 for this query.
-  assertEquals(search(ROWS, "chef mushroom").map((m) => m.row.id), [1]);
-  assertEquals(search(ROWS, "chef")[0].row.id, 1);
+Deno.test("starring does not change ranked search order", () => {
+  // Unstarred baseline: row 1 outranks row 3 for "chef" (stronger title match).
+  const before = search(ROWS, "chef").map((m) => m.row.id);
+  assertEquals(before[0], 1);
 
+  // Starring row 3 must not move it up — starring only affects the empty query.
   const starred = ROWS.map((r) => r.id === 3 ? { ...r, starred: 1 } : r);
-  const hits = search(starred, "chef");
-  assertEquals(hits[0].row.id, 3); // starred wins outright
-  assertEquals(hits[1].row.id, 1);
+  const after = search(starred, "chef").map((m) => m.row.id);
+  assertEquals(after, before);
 });
 
 Deno.test("starring does not make a non-matching recipe appear", () => {

@@ -173,12 +173,9 @@ export function search(rows: SearchRow[], query: string, limit = 200): Match[] {
     out.push({ row, score: total, titleHits: [...new Set(titleHits)].sort((a, b) => a - b) });
   }
 
-  // Starred recipes are a hard first tier, not a score bonus: a favourite that
-  // matches at all outranks any unstarred match, however strong.
-  out.sort((a, b) =>
-    (b.row.starred ?? 0) - (a.row.starred ?? 0) ||
-    b.score - a.score ||
-    a.row.title.localeCompare(b.row.title)
-  );
+  // Starring only affects the default (no-query) ordering above; it does not
+  // bias a ranked search — a favourite that matches weakly should not outrank
+  // an unstarred recipe that matches strongly.
+  out.sort((a, b) => b.score - a.score || a.row.title.localeCompare(b.row.title));
   return out.slice(0, limit);
 }

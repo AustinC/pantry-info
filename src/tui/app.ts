@@ -40,8 +40,6 @@ interface NoteEdit {
   recipeId: number;
   title: string;
   text: string;
-  /** Where to go back to when the editor closes. */
-  returnTo: "search" | "detail";
 }
 
 interface LogLine {
@@ -150,7 +148,6 @@ export class App {
         case "n": return this.#askCount();
         case "e": return this.#toggleReceiver();
         case "t": return this.#toggleStar();
-        case "a": return this.#editNote();
         case "r":
           this.#reloadIndex();
           this.#status = "index reloaded";
@@ -274,55 +271,29 @@ export class App {
     if (k.ch && k.ch >= " ") n.text += k.ch;
   }
 
-  /** Open the note editor for the selected (or open) recipe. */
+  /** Open the note editor for the recipe currently open in detail view. */
   #editNote(): void {
-    let id: number | undefined;
-    let title = "";
-    let returnTo: "search" | "detail" = "search";
-
-    if (this.#mode === "detail" && this.#detail) {
-      id = this.#detail.recipe.id;
-      title = this.#detail.recipe.title;
-      returnTo = "detail";
-    } else {
-      const match = this.#matches[this.#sel];
-      if (!match) return;
-      id = match.row.id;
-      title = match.row.title;
-    }
-
-    const recipe = this.#db.getRecipe(id);
-    if (!recipe) return;
-
-    this.#note = { recipeId: id, title, text: recipe.note ?? "", returnTo };
+    if (!this.#detail) return;
+    const { id, title, note } = this.#detail.recipe;
+    this.#note = { recipeId: id, title, text: note ?? "" };
     this.#mode = "note";
   }
 
   #closeNote(save: boolean): void {
     const n = this.#note;
     this.#note = null;
-    if (!n) { this.#mode = "search"; return; }
+    this.#mode = "detail";
+    if (!n) return;
 
     if (save) {
       this.#db.setNote(n.recipeId, n.text);
       this.#reloadIndex();
-      // Keep the cursor on the recipe we just annotated.
-      const moved = this.#matches.findIndex((m) => m.row.id === n.recipeId);
-      if (moved >= 0) this.#sel = moved;
-      this.#status = n.text.trim() ? `note saved for ${n.title}` : `note cleared for ${n.title}`;
-    } else {
-      this.#status = "note discarded";
-    }
-
-    if (n.returnTo === "detail") {
-      // Re-read so a saved note shows immediately in the open recipe.
+      this.#detailStatus = n.text.trim() ? `note saved for ${n.title}` : `note cleared for ${n.title}`;
+      // Re-read so the saved note shows immediately.
       const recipe = this.#db.getRecipe(n.recipeId);
       if (recipe && this.#detail) this.#detail.recipe = recipe;
-      this.#mode = "detail";
-      this.#detailStatus = save ? (this.#status ?? "") : "note discarded";
-      this.#status = "";
     } else {
-      this.#mode = "search";
+      this.#detailStatus = "note discarded";
     }
   }
 
@@ -565,12 +536,9 @@ export class App {
   }
 
   #renderRow(m: Match, selected: boolean, cols: number): string {
-    // The community rating is a plain number: ★ is reserved for the user's own star.
-    const rating = m.row.rating ? m.row.rating.toFixed(1) : "   ";
-    const time = humanDuration(m.row.total_time) ?? "";
-    const meta = `${rating}  ${time}`;
-    const metaW = 18;
-    const gutterW = 5; // cursor + star + note marker + space
+    const meta = humanDuration(m.row.total_time) ?? "";
+    const metaW = 12;
+    const gutterW = 4; // cursor + star + space
     const titleW = Math.max(10, cols - metaW - gutterW - 2);
 
     const base = selected ? theme.selBg + ansi.bold : "";
@@ -581,10 +549,7 @@ export class App {
     const star = m.row.starred
       ? `${theme.accentAlt}★${ansi.reset}${base}`
       : " ";
-    // A pencil marks recipes carrying one of the user's notes.
-    const noted = m.row.note ? `${theme.good}✎${ansi.reset}${base}` : " ";
-
-    const line = `${cursor}${star}${noted} ` + highlight(title, hits, base) +
+    const line = `${cursor}${star} ` + highlight(title, hits, base) +
       base + " ".repeat(Math.max(1, titleW - title.length + 1)) +
       (selected ? theme.accentAlt : theme.muted) + padEnd(meta, metaW) + ansi.reset;
     return selected ? theme.selBg + padEnd(line, cols) + ansi.reset : line;
@@ -599,7 +564,6 @@ export class App {
     const keys = [
       ["↵", "view"],
       ["^T", "star"],
-      ["^A", "note"],
       ["^S", `scrape ${this.#scrapeCount}`],
       ["^O", "url"],
       ["^E", this.#receiver ? "stop recv" : "receive"],
@@ -631,7 +595,6 @@ export class App {
     lines.push(`${star}${ansi.bold}${theme.accentAlt}${r.title}${ansi.reset}`);
     const meta: string[] = [];
     if (r.author) meta.push(r.author);
-    if (r.rating) meta.push(`rated ${r.rating.toFixed(1)}${r.rating_count ? ` (${r.rating_count})` : ""}`);
     const t = humanDuration(r.total_time);
     if (t) meta.push(t);
     if (r.servings) meta.push(`serves ${r.servings}`);

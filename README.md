@@ -42,12 +42,27 @@ pantry-info                    12 recipes · 168 ingredients · 20 queued · scr
 | `↑` `↓` `PgUp` `PgDn` | move the selection |
 | `Enter` | open the recipe (scroll with `↑↓` / `j` `k` / space) |
 | `y` | *(in a recipe)* copy its URL to the clipboard |
+| `Ctrl-T` | star/unstar the highlighted (or open) recipe |
+| `Ctrl-A` | *(in a recipe)* add or edit a personal note |
+| `Ctrl-E` | start/stop the local receiver for the browser extension |
 | `Ctrl-S` | scrape N more Chef John recipes for the current keyword |
 | `Ctrl-O` | paste a recipe URL to download directly |
 | `Ctrl-N` | change how many recipes a scrape pulls (default 3) |
 | `Ctrl-R` | reload the index |
 | `Ctrl-W` / `Ctrl-U` | delete word / clear the query |
 | `Esc` | back, or quit from the search screen |
+
+### Stars and notes
+
+`Ctrl-T` toggles a star (★) on the highlighted or open recipe. Inside a recipe,
+`Ctrl-A` opens an editor for a free-text note, shown between the ingredients and the
+instructions.
+
+Starring only changes the **default listing** — clear the search box and starred
+recipes sort first. It does not bias ranked search results: typing a query ranks
+purely on match quality, so an unstarred recipe that matches well still outranks a
+starred one that matches poorly. The idea is "show me my favourites when I'm
+browsing", not "favourites always win".
 
 ### Clipboard
 
