@@ -144,6 +144,12 @@ CREATE TABLE IF NOT EXISTS keyword_runs (
   found      INTEGER NOT NULL DEFAULT 0,
   scraped    INTEGER NOT NULL DEFAULT 0
 );
+
+-- The ingredient-search picker's current "have" list, so it survives restarts.
+CREATE TABLE IF NOT EXISTS have_ingredients (
+  name_norm  TEXT PRIMARY KEY,
+  added_at   TEXT NOT NULL
+);
 `;
 
 export class Db {
@@ -433,5 +439,82 @@ export class Db {
       total: number;
       matches: string;
     }[];
+  }
+
+  /** The ingredient-search picker's "have" list, oldest pick first. */
+  getHaveIngredients(): string[] {
+    return (
+      this.#db.prepare("SELECT name_norm FROM have_ingredients ORDER BY added_at ASC")
+        .all() as unknown as { name_norm: string }[]
+    ).map((r) => r.name_norm);
+  }
+
+  addHaveIngredient(nameNorm: string): void {
+    this.#db.prepare(
+      "INSERT INTO have_ingredients (name_norm, added_at) VALUES (?, ?) ON CONFLICT(name_norm) DO NOTHING",
+    ).run(nameNorm, new Date().toISOString());
+  }
+
+  removeHaveIngredient(nameNorm: string): void {
+    this.#db.prepare("DELETE FROM have_ingredients WHERE name_norm = ?").run(nameNorm);
+  }
+
+  /**
+   * Every distinct normalised ingredient name in the database, most-used first.
+   * Backs the ingredient-search picker: the user fuzzy-searches this list rather
+   * than free text, so what they select is always an exact `name_norm`.
+   */
+  distinctIngredientNames(): { nameNorm: string; count: number }[] {
+    return this.#db.prepare(
+      `SELECT name_norm AS nameNorm, COUNT(DISTINCT recipe_id) AS count
+         FROM ingredients
+        WHERE is_heading = 0
+        GROUP BY name_norm
+        ORDER BY count DESC, name_norm ASC`,
+    ).all() as unknown as { nameNorm: string; count: number }[];
+  }
+
+  /**
+   * Recipes ranked by what fraction of their ingredients are in `have` — the
+   * ingredient-search picker's current selection. Unlike `byIngredients`, this
+   * is an exact match on `name_norm`: `have` entries come straight from
+   * `distinctIngredientNames`, so there is no ambiguity left to resolve with a
+   * substring fallback.
+   */
+  recipesByIngredientNames(
+    have: string[],
+  ): { id: number; title: string; matched: number; total: number; missing: string[] }[] {
+    if (have.length === 0) return [];
+    const placeholders = have.map(() => "?").join(",");
+    // group_concat drops NULLs on its own, so the CASE only needs to null out
+    // the ingredients that ARE on hand, leaving the gaps concatenated.
+    const rows = this.#db.prepare(
+      `SELECT r.id, r.title,
+              SUM(CASE WHEN i.name_norm IN (${placeholders}) THEN 1 ELSE 0 END) AS matched,
+              COUNT(*) AS total,
+              group_concat(CASE WHEN i.name_norm IN (${placeholders}) THEN NULL ELSE i.name_norm END) AS missingRaw
+         FROM ingredients i
+         JOIN recipes r ON r.id = i.recipe_id
+        WHERE i.is_heading = 0
+        GROUP BY r.id
+       HAVING matched > 0
+        ORDER BY (matched * 1.0 / total) DESC, matched DESC, r.title ASC`,
+    ).all(...have, ...have) as unknown as {
+      id: number;
+      title: string;
+      matched: number;
+      total: number;
+      missingRaw: string | null;
+    }[];
+
+    return rows.map((r) => ({
+      id: r.id,
+      title: r.title,
+      matched: r.matched,
+      total: r.total,
+      // A recipe can list the same ingredient twice (garnish + filling); the
+      // gap list should name each missing ingredient once.
+      missing: r.missingRaw ? [...new Set(r.missingRaw.split(","))] : [],
+    }));
   }
 }

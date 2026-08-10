@@ -1,5 +1,5 @@
 import { assert, assertEquals } from "@std/assert";
-import { search } from "../src/fuzzy.ts";
+import { rankStrings, search } from "../src/fuzzy.ts";
 import type { SearchRow } from "../src/db.ts";
 
 function row(id: number, title: string, extra: Partial<SearchRow> = {}): SearchRow {
@@ -88,4 +88,39 @@ Deno.test("reports title hit positions for highlighting", () => {
   assert(m.titleHits.length > 0);
   const matched = m.titleHits.map((i) => m.row.title[i]).join("").toLowerCase();
   assertEquals(matched, "carbonara");
+});
+
+// -- rankStrings: backs the ingredient-search picker --------------------------
+
+const INGREDIENT_NAMES = [
+  "sugar",
+  "brown sugar",
+  "powdered sugar",
+  "kalamata olive",
+  "olive oil",
+  "anchovy",
+];
+
+Deno.test("rankStrings finds every plausible match for a query", () => {
+  const hits = rankStrings(INGREDIENT_NAMES, "sugar").map((m) => m.text);
+  assertEquals(new Set(hits), new Set(["sugar", "brown sugar", "powdered sugar"]));
+});
+
+Deno.test("rankStrings ranks an exact match above a substring match", () => {
+  const hits = rankStrings(INGREDIENT_NAMES, "sugar");
+  assertEquals(hits[0].text, "sugar");
+});
+
+Deno.test("rankStrings supports multi-word queries", () => {
+  assertEquals(rankStrings(INGREDIENT_NAMES, "olive oil").map((m) => m.text), ["olive oil"]);
+});
+
+Deno.test("rankStrings returns items unranked (score 0) for an empty query", () => {
+  const hits = rankStrings(INGREDIENT_NAMES, "");
+  assertEquals(hits.map((m) => m.text), INGREDIENT_NAMES);
+  assert(hits.every((m) => m.score === 0 && m.hits.length === 0));
+});
+
+Deno.test("rankStrings excludes items that don't match", () => {
+  assertEquals(rankStrings(INGREDIENT_NAMES, "zzzz"), []);
 });

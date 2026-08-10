@@ -44,6 +44,7 @@ pantry-info                    12 recipes · 168 ingredients · 20 queued · scr
 | `y` | *(in a recipe)* copy its URL to the clipboard |
 | `Ctrl-T` | star/unstar the highlighted (or open) recipe |
 | `Ctrl-A` | *(in a recipe)* add or edit a personal note |
+| `Ctrl-G` | switch to ingredient search — find recipes by what you have on hand |
 | `Ctrl-E` | start/stop the local receiver for the browser extension |
 | `Ctrl-S` | scrape N more Chef John recipes for the current keyword |
 | `Ctrl-O` | paste a recipe URL to download directly |
@@ -63,6 +64,28 @@ recipes sort first. It does not bias ranked search results: typing a query ranks
 purely on match quality, so an unstarred recipe that matches well still outranks a
 starred one that matches poorly. The idea is "show me my favourites when I'm
 browsing", not "favourites always win".
+
+### Ingredient search
+
+`Ctrl-G` switches from text search to a second mode: instead of typing a recipe
+keyword, you build up a "have" list of ingredients and see which recipes those best
+cover.
+
+- Type to fuzzy-search ingredient *names* (not amounts) — `sugar` matches every kind
+  you've got in the database (`brown sugar`, `powdered sugar`, ...) as separate,
+  individually pickable candidates.
+- `↑`/`↓` move through candidates, `Enter` adds or removes the highlighted one.
+- `Tab` moves focus down to the ranked recipe list; `Enter` there opens the recipe.
+- `Esc` returns to text search at any point.
+
+As you add ingredients, the recipe list re-sorts by what percentage of each recipe's
+ingredients are covered by your "have" list — a two-ingredient recipe you can fully
+make outranks a ten-ingredient recipe you're mostly missing. When a recipe is only
+missing a handful of things (four or fewer), they're listed right next to its title
+so you can see at a glance what a supermarket run would need to cover.
+
+The "have" list is saved to the database, so it's still there next time you open
+pantry-info — this is meant to model your actual pantry, not a one-off search.
 
 ### Clipboard
 
@@ -206,7 +229,8 @@ up where it left off. Pulling a handful of recipes at a time is the intended usa
 
 ## Ingredient storage
 
-This is the part built for the deferred feature. Each line is split into columns:
+This is what makes [ingredient search](#ingredient-search) possible. Each line is
+split into columns:
 
 | raw | quantity | unit | pack_size | name | name_norm | note |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -221,15 +245,15 @@ lowercased, singularised, with prep and size words removed — so *anchovy fille
 *minced anchovies* both become `anchovy`. Section labels ("For the sauce:") are flagged
 `is_heading` and excluded from ingredient matching.
 
-The planned search already works from the CLI:
+The same lookup is also available as a one-off from the CLI, using loose substring
+matching against free-text ingredient names (the TUI's `Ctrl-G` picker instead matches
+`name_norm` exactly, since you select candidates from a list rather than typing them):
 
 ```
 $ deno run -A main.ts pantry anchovy olive
  2/2  Puttanesca            (anchovy, kalamata olive)
  1/2  Olive Bread           (olive)
 ```
-
-Wiring it into the UI is the next step; the schema and parser are in place.
 
 ## Layout
 

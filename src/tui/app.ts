@@ -12,12 +12,14 @@
  */
 
 import { Db, type IngredientRow, type RecipeRow, type SearchRow } from "../db.ts";
-import { search as fuzzySearch, type Match } from "../fuzzy.ts";
+import { rankStrings, search as fuzzySearch, type Match, type StringMatch } from "../fuzzy.ts";
 import { formatAmount } from "../ingredients.ts";
 import { humanDuration } from "../scraper.ts";
 import { scrapeKeyword, scrapeUrl } from "../jobs.ts";
 import { DEFAULT_PORT, serveReceiver } from "../receiver.ts";
 import { copyToClipboard } from "./clipboard.ts";
+import { DIGIT_HEIGHT, renderStepNumber, stepNumberWidth } from "./bigNumber.ts";
+import { type CookingModeHandle, startCookingMode } from "./cookingMode.ts";
 import {
   ansi,
   clearScreen,
@@ -34,7 +36,7 @@ import {
   write,
 } from "./term.ts";
 
-type Mode = "search" | "detail" | "scrape" | "prompt" | "note";
+type Mode = "search" | "detail" | "scrape" | "prompt" | "note" | "ingredients";
 
 interface NoteEdit {
   recipeId: number;
@@ -54,6 +56,14 @@ interface PromptState {
   onSubmit: (value: string) => void;
 }
 
+interface IngredientResult {
+  id: number;
+  title: string;
+  matched: number;
+  total: number;
+  missing: string[];
+}
+
 export class App {
   #db: Db;
   #index: SearchRow[] = [];
@@ -68,6 +78,10 @@ export class App {
   #detail: { recipe: RecipeRow; ingredients: IngredientRow[]; scroll: number } | null = null;
   /** Transient message in the detail footer (e.g. "url copied"). */
   #detailStatus = "";
+  /** Which screen to return to when the detail view closes. */
+  #detailReturnTo: "search" | "ingredients" = "search";
+  /** Scoped to whichever recipe is open; leaving the recipe always ends it. */
+  #cooking: { handle: CookingModeHandle; title: string } | null = null;
   #log: LogLine[] = [];
   #logScroll = 0;
   #busy = false;
@@ -80,23 +94,54 @@ export class App {
   #receiver: { controller: AbortController; port: number; received: number } | null = null;
   #receiverPort = DEFAULT_PORT;
 
+  // -- ingredient search (Ctrl-G) --------------------------------------------
+  // Not Ctrl-I: every terminal sends that as byte 0x09, identical to Tab, so
+  // the two can never be told apart — binding Ctrl-I here would be silently
+  // unreachable.
+  // All distinct ingredient names in the database, most-used first; the picker
+  // fuzzy-searches this list rather than free text.
+  #ingredientNames: string[] = [];
+  #ingredientCounts: Map<string, number> = new Map();
+  #ingQuery = "";
+  #ingCandidates: StringMatch[] = [];
+  #ingSel = 0;
+  #ingCandTop = 0;
+  // The "have" list is written through to the database on every toggle, so it
+  // survives quitting and relaunching; loaded once here as the source of truth.
+  #included: string[] = [];
+  #includedSet: Set<string> = new Set();
+  #ingResults: IngredientResult[] = [];
+  #ingResultSel = 0;
+  #ingResultTop = 0;
+  #ingFocus: "candidates" | "results" = "candidates";
+
   constructor(db: Db) {
     this.#db = db;
+    this.#included = db.getHaveIngredients();
+    this.#includedSet = new Set(this.#included);
   }
 
   async run(): Promise<void> {
     this.#reloadIndex();
     Deno.stdin.setRaw(true);
     enterAlt();
-    const restore = () => {
+    const restore = async () => {
       try { Deno.stdin.setRaw(false); } catch { /* already restored */ }
       // Leave no listener behind holding the event loop open.
       this.#receiver?.controller.abort();
       this.#receiver = null;
+      // Awaited deliberately: once this process exits, nothing else will ever
+      // stop systemd-inhibit — an unawaited kill here could leave the monitor
+      // unable to sleep for up to 90 minutes with no app left to fix it.
+      if (this.#cooking) {
+        const c = this.#cooking;
+        this.#cooking = null;
+        await c.handle.stop();
+      }
       exitAlt();
     };
     // Restore the terminal even if the process is interrupted.
-    const onSignal = () => { restore(); Deno.exit(0); };
+    const onSignal = async () => { await restore(); Deno.exit(0); };
     Deno.addSignalListener("SIGINT", onSignal);
     Deno.addSignalListener("SIGTERM", onSignal);
 
@@ -110,7 +155,7 @@ export class App {
     } finally {
       Deno.removeSignalListener("SIGINT", onSignal);
       Deno.removeSignalListener("SIGTERM", onSignal);
-      restore();
+      await restore();
     }
   }
 
@@ -131,6 +176,7 @@ export class App {
 
   #handleKey(k: Key): void {
     if (this.#mode === "note") return this.#handleNoteKey(k);
+    if (this.#mode === "ingredients") return this.#handleIngredientKey(k);
     if (this.#mode === "prompt") return this.#handlePromptKey(k);
     if (this.#mode === "detail") return this.#handleDetailKey(k);
     if (this.#mode === "scrape") return this.#handleScrapeKey(k);
@@ -148,6 +194,7 @@ export class App {
         case "n": return this.#askCount();
         case "e": return this.#toggleReceiver();
         case "t": return this.#toggleStar();
+        case "g": return this.#enterIngredientMode();
         case "r":
           this.#reloadIndex();
           this.#status = "index reloaded";
@@ -188,15 +235,17 @@ export class App {
   #handleDetailKey(k: Key): void {
     if ((k.ctrl && k.name === "c")) { this.#quit = true; return; }
     if (k.name === "escape" || k.name === "backspace" || (k.ch === "q")) {
-      this.#mode = "search";
+      this.#mode = this.#detailReturnTo;
       this.#detail = null;
       this.#detailStatus = "";
+      this.#leaveCookingMode();
       return;
     }
     if (!this.#detail) return;
 
     if (k.ch === "y" || (k.ctrl && k.name === "y")) return this.#copyUrl();
     if (k.ctrl && k.name === "a") return this.#editNote();
+    if (k.ctrl && k.name === "b") return this.#toggleCookingMode();
     this.#detailStatus = ""; // any other key clears the last message
 
     const step = (n: number) => {
@@ -307,9 +356,14 @@ export class App {
   #openSelected(): void {
     const m = this.#matches[this.#sel];
     if (!m) return;
-    const recipe = this.#db.getRecipe(m.row.id);
+    this.#openRecipe(m.row.id, "search");
+  }
+
+  #openRecipe(id: number, returnTo: "search" | "ingredients"): void {
+    const recipe = this.#db.getRecipe(id);
     if (!recipe) return;
     this.#detail = { recipe, ingredients: this.#db.getIngredients(recipe.id), scroll: 0 };
+    this.#detailReturnTo = returnTo;
     this.#mode = "detail";
   }
 
@@ -330,6 +384,128 @@ export class App {
     if (moved >= 0) this.#sel = moved;
 
     this.#status = `${nowStarred ? "starred" : "unstarred"} ${match.row.title}`;
+  }
+
+  // -- ingredient search -----------------------------------------------------
+
+  /**
+   * Enter ingredient-search mode. Loads the current distinct ingredient list
+   * fresh each time (cheap, and keeps it in sync with anything just scraped),
+   * but keeps the user's picks from a previous visit this session.
+   */
+  #enterIngredientMode(): void {
+    this.#ingredientCounts = new Map();
+    this.#ingredientNames = this.#db.distinctIngredientNames().map((r) => {
+      this.#ingredientCounts.set(r.nameNorm, r.count);
+      return r.nameNorm;
+    });
+    this.#ingFocus = "candidates";
+    this.#refilterIngredients();
+    this.#recomputeIngredientResults();
+    this.#mode = "ingredients";
+  }
+
+  #refilterIngredients(): void {
+    if (!this.#ingQuery.trim()) {
+      // No query: browse by popularity rather than an arbitrary/alphabetical order.
+      this.#ingCandidates = this.#ingredientNames.map((text) => ({ text, score: 0, hits: [] }));
+    } else {
+      this.#ingCandidates = rankStrings(this.#ingredientNames, this.#ingQuery);
+    }
+    this.#ingSel = Math.min(this.#ingSel, Math.max(0, this.#ingCandidates.length - 1));
+    this.#ingCandTop = 0;
+  }
+
+  #recomputeIngredientResults(): void {
+    this.#ingResults = this.#included.length
+      ? this.#db.recipesByIngredientNames(this.#included)
+      : [];
+    this.#ingResultSel = Math.min(this.#ingResultSel, Math.max(0, this.#ingResults.length - 1));
+    this.#ingResultTop = 0;
+  }
+
+  /** Add or remove the highlighted candidate from the "have" list. */
+  #toggleIncludedCandidate(): void {
+    const c = this.#ingCandidates[this.#ingSel];
+    if (!c) return;
+    if (this.#includedSet.has(c.text)) {
+      this.#includedSet.delete(c.text);
+      this.#included = this.#included.filter((n) => n !== c.text);
+      this.#db.removeHaveIngredient(c.text);
+    } else {
+      this.#includedSet.add(c.text);
+      this.#included.push(c.text);
+      this.#db.addHaveIngredient(c.text);
+    }
+    this.#recomputeIngredientResults();
+  }
+
+  #openIngredientResult(): void {
+    const r = this.#ingResults[this.#ingResultSel];
+    if (!r) return;
+    this.#openRecipe(r.id, "ingredients");
+  }
+
+  #handleIngredientKey(k: Key): void {
+    if (k.ctrl && k.name === "c") { this.#quit = true; return; }
+    if (k.name === "escape") { this.#mode = "search"; return; }
+
+    if (k.name === "tab") {
+      if (this.#ingFocus === "candidates") {
+        if (this.#ingResults.length) this.#ingFocus = "results";
+      } else {
+        this.#ingFocus = "candidates";
+      }
+      return;
+    }
+
+    if (this.#ingFocus === "results") {
+      const max = this.#ingResults.length - 1;
+      switch (k.name) {
+        case "up": this.#ingResultSel = Math.max(0, this.#ingResultSel - 1); return;
+        case "down": this.#ingResultSel = Math.min(max, this.#ingResultSel + 1); return;
+        case "pageup": this.#ingResultSel = Math.max(0, this.#ingResultSel - 10); return;
+        case "pagedown": this.#ingResultSel = Math.min(max, this.#ingResultSel + 10); return;
+        case "home": this.#ingResultSel = 0; return;
+        case "end": this.#ingResultSel = Math.max(0, max); return;
+        case "enter": return this.#openIngredientResult();
+      }
+      return; // typing is ignored while browsing results
+    }
+
+    // focus === "candidates"
+    const max = this.#ingCandidates.length - 1;
+    switch (k.name) {
+      case "up": this.#ingSel = Math.max(0, this.#ingSel - 1); return;
+      case "down": this.#ingSel = Math.min(max, this.#ingSel + 1); return;
+      case "pageup": this.#ingSel = Math.max(0, this.#ingSel - 10); return;
+      case "pagedown": this.#ingSel = Math.min(max, this.#ingSel + 10); return;
+      case "home": this.#ingSel = 0; return;
+      case "end": this.#ingSel = Math.max(0, max); return;
+      case "enter": return this.#toggleIncludedCandidate();
+      case "backspace":
+        if (this.#ingQuery) {
+          this.#ingQuery = this.#ingQuery.slice(0, -1);
+          this.#refilterIngredients();
+        }
+        return;
+    }
+
+    if (k.ctrl && k.name === "u") {
+      this.#ingQuery = "";
+      this.#refilterIngredients();
+      return;
+    }
+    if (k.ctrl && k.name === "w") {
+      this.#ingQuery = this.#ingQuery.replace(/\s*\S+\s*$/, "");
+      this.#refilterIngredients();
+      return;
+    }
+
+    if (k.ch && k.ch >= " ") {
+      this.#ingQuery += k.ch;
+      this.#refilterIngredients();
+    }
   }
 
   /**
@@ -385,6 +561,47 @@ export class App {
       .then((r) => { this.#detailStatus = `url copied (${r.via})`; })
       .catch((e) => { this.#detailStatus = `copy failed: ${(e as Error).message}`; })
       .finally(() => { if (this.#mode === "detail") this.#render(); });
+  }
+
+  /** Start or stop cooking mode for the open recipe. */
+  #toggleCookingMode(): void {
+    if (!this.#detail) return;
+
+    if (this.#cooking) {
+      const c = this.#cooking;
+      this.#cooking = null; // reflect the change immediately; stop() finishes in the background
+      this.#detailStatus = "cooking mode off — monitor sleep restored";
+      c.handle.stop().catch(() => {});
+      return;
+    }
+
+    const title = this.#detail.recipe.title;
+    this.#detailStatus = "starting cooking mode…";
+    const result = startCookingMode(`pantry-info: cooking "${title}"`, () => this.#onCookingExpired());
+    if (!result.ok) {
+      this.#detailStatus = `cooking mode unavailable — ${result.reason}`;
+      return;
+    }
+    this.#cooking = { handle: result.handle, title };
+    this.#detailStatus = "cooking mode on — monitor sleep disabled for up to 90 min";
+  }
+
+  /** The 90-minute cap elapsed without an explicit toggle-off. */
+  #onCookingExpired(): void {
+    if (!this.#cooking) return;
+    this.#cooking = null;
+    if (this.#mode === "detail") {
+      this.#detailStatus = "cooking mode auto-expired after 90 min — monitor sleep restored";
+    }
+    this.#render();
+  }
+
+  /** Cooking mode is scoped to the open recipe — leaving it always ends it. */
+  #leaveCookingMode(): void {
+    if (!this.#cooking) return;
+    const c = this.#cooking;
+    this.#cooking = null;
+    c.handle.stop().catch(() => {});
   }
 
   #askUrl(): void {
@@ -471,6 +688,8 @@ export class App {
     const { cols, rows } = size();
     const body = this.#mode === "note"
       ? this.#renderNote(cols, rows)
+      : this.#mode === "ingredients"
+      ? this.#renderIngredients(cols, rows)
       : this.#mode === "detail"
       ? this.#renderDetail(cols, rows)
       : this.#mode === "scrape"
@@ -564,6 +783,7 @@ export class App {
     const keys = [
       ["↵", "view"],
       ["^T", "star"],
+      ["^G", "ingredients"],
       ["^S", `scrape ${this.#scrapeCount}`],
       ["^O", "url"],
       ["^E", this.#receiver ? "stop recv" : "receive"],
@@ -583,6 +803,160 @@ export class App {
     return " " + shown
       .map(([k, v]) => `${theme.accent}${k}${ansi.reset} ${theme.muted}${v}${ansi.reset}`)
       .join(`${theme.faint} · ${ansi.reset}`);
+  }
+
+  #renderIngredients(cols: number, rows: number): string[] {
+    const out: string[] = [];
+    const rule = theme.faint + "─".repeat(cols) + ansi.reset;
+
+    out.push(this.#header(cols));
+    out.push(rule);
+
+    const chipsText = this.#included.length
+      ? this.#included.join(", ")
+      : "(none yet — search and press ↵ to add)";
+    out.push(
+      ` ${theme.muted}Have (${this.#included.length}):${ansi.reset} ` +
+        `${theme.good}${truncate(chipsText, cols - 14)}${ansi.reset}`,
+    );
+    out.push(rule);
+
+    out.push(`${theme.accent}❯${ansi.reset} ${this.#ingQuery}${theme.accent}▏${ansi.reset}`);
+    out.push(rule);
+
+    // Split the remaining space between the candidate picker and the ranked
+    // recipe results, favouring results since that is the point of the screen.
+    const footerLines = 2;
+    const labelLines = 1;
+    const remaining = Math.max(6, rows - out.length - footerLines - labelLines);
+    const candH = Math.max(3, Math.min(7, Math.floor(remaining * 0.4)));
+    const resultsH = Math.max(3, remaining - candH);
+
+    if (this.#ingSel < this.#ingCandTop) this.#ingCandTop = this.#ingSel;
+    if (this.#ingSel >= this.#ingCandTop + candH) this.#ingCandTop = this.#ingSel - candH + 1;
+
+    if (this.#ingCandidates.length === 0) {
+      out.push(`  ${theme.muted}no ingredients match "${this.#ingQuery}"${ansi.reset}`);
+      for (let i = 1; i < candH; i++) out.push("");
+    } else {
+      const visible = this.#ingCandidates.slice(this.#ingCandTop, this.#ingCandTop + candH);
+      visible.forEach((c, i) => {
+        out.push(this.#renderIngredientCandidate(c, this.#ingCandTop + i === this.#ingSel, cols));
+      });
+      for (let i = visible.length; i < candH; i++) out.push("");
+    }
+
+    out.push(
+      `${theme.muted}Recipes by % of ingredients on hand` +
+        (this.#ingFocus === "results" ? ` ${theme.accentAlt}(focused)${theme.muted}` : "") +
+        `:${ansi.reset}`,
+    );
+
+    if (this.#ingResultSel < this.#ingResultTop) this.#ingResultTop = this.#ingResultSel;
+    if (this.#ingResultSel >= this.#ingResultTop + resultsH) {
+      this.#ingResultTop = this.#ingResultSel - resultsH + 1;
+    }
+
+    if (this.#ingResults.length === 0) {
+      const msg = this.#included.length
+        ? "no recipes use any of these"
+        : "pick ingredients above to see matches";
+      out.push(`  ${theme.muted}${msg}${ansi.reset}`);
+      for (let i = 1; i < resultsH; i++) out.push("");
+    } else {
+      const visible = this.#ingResults.slice(this.#ingResultTop, this.#ingResultTop + resultsH);
+      visible.forEach((r, i) => {
+        out.push(
+          this.#renderIngredientResult(r, this.#ingResultTop + i === this.#ingResultSel, cols),
+        );
+      });
+      for (let i = visible.length; i < resultsH; i++) out.push("");
+    }
+
+    out.push(rule);
+    const hint = this.#ingFocus === "candidates"
+      ? "↵ add/remove · ↑↓ move · Tab → recipes · esc back"
+      : "↵ view recipe · ↑↓ move · Tab → ingredients · esc back";
+    out.push(` ${theme.muted}${truncate(hint, cols - 2)}${ansi.reset}`);
+
+    return out.slice(0, rows);
+  }
+
+  #renderIngredientCandidate(c: StringMatch, selected: boolean, cols: number): string {
+    const selectedOnly = selected && this.#ingFocus === "candidates";
+    const base = selectedOnly ? theme.selBg + ansi.bold : "";
+    const cursor = selectedOnly ? `${theme.accentAlt}❯${ansi.reset}${base}` : " ";
+    const included = this.#includedSet.has(c.text);
+    const mark = included ? `${theme.good}✓${ansi.reset}${base}` : " ";
+    const count = this.#ingredientCounts.get(c.text) ?? 0;
+    const countText = `(${count})`;
+    const nameW = Math.max(6, cols - 4 - countText.length - 2);
+    const name = truncate(c.text, nameW);
+    const hits = c.hits.filter((h) => h < name.length);
+
+    const line = `${cursor}${mark} ` + highlight(name, hits, base) +
+      base + " ".repeat(Math.max(1, nameW - name.length + 1)) +
+      theme.faint + countText + ansi.reset;
+    return selectedOnly ? theme.selBg + padEnd(line, cols) + ansi.reset : line;
+  }
+
+  #renderIngredientResult(r: IngredientResult, selected: boolean, cols: number): string {
+    const selectedOnly = selected && this.#ingFocus === "results";
+    const base = selectedOnly ? theme.selBg + ansi.bold : "";
+    const cursor = selectedOnly ? `${theme.accentAlt}❯${ansi.reset}${base}` : " ";
+    const pct = Math.round((r.matched / r.total) * 100);
+    const pctText = `${String(pct).padStart(3)}%`;
+    const fraction = `${r.matched}/${r.total}`;
+    const fracW = 8;
+
+    // A short, actionable gap list earns its place next to the title; a long
+    // one is just noise, so it's only shown up to a handful of items.
+    const missingText = r.missing.length > 0 && r.missing.length <= 4
+      ? `needs ${r.missing.join(", ")}`
+      : "";
+
+    const prefixW = 2 + pctText.length + 2; // cursor + space + pct + 2 spaces
+    const avail = Math.max(10, cols - prefixW - fracW - 1);
+
+    let title = r.title;
+    let missing = missingText;
+    if (missing && title.length + 2 + missing.length > avail) {
+      // The title always gets at least 60% of the space; the gap list takes
+      // whatever's left, or is dropped entirely if that isn't enough to read.
+      const titleW = Math.min(title.length, Math.max(8, Math.floor(avail * 0.6)));
+      title = truncate(title, titleW);
+      const missingW = avail - title.length - 2;
+      missing = missingW >= 6 ? truncate(missing, missingW) : "";
+    } else {
+      title = truncate(title, avail);
+    }
+
+    const usedW = title.length + (missing ? missing.length + 2 : 0);
+    const pad = " ".repeat(Math.max(1, avail - usedW + 1));
+
+    const line = `${cursor} ${theme.accentAlt}${pctText}${ansi.reset}${base}  ${title}` +
+      (missing ? `  ${theme.warn}${missing}${ansi.reset}${base}` : "") +
+      base + pad + theme.faint + padEnd(fraction, fracW) + ansi.reset;
+    return selectedOnly ? theme.selBg + padEnd(line, cols) + ansi.reset : line;
+  }
+
+  /**
+   * A step whose text wraps to 2+ lines gets its number rendered as a small
+   * ASCII-art glyph instead of "NN." — legible at a glance while your hands are
+   * busy cooking. Short steps keep the plain "NN." prefix; there's no point
+   * spending 5 rows on a number next to one line of text.
+   */
+  #renderScaledStep(num: number, minDigits: number, wrapped: string[]): string[] {
+    const glyphRows = renderStepNumber(num, minDigits);
+    const glyphW = stepNumberWidth(minDigits);
+    const bodyH = Math.max(DIGIT_HEIGHT, wrapped.length);
+    const out: string[] = [];
+    for (let row = 0; row < bodyH; row++) {
+      const glyph = row < DIGIT_HEIGHT ? glyphRows[row] : " ".repeat(glyphW);
+      const text = row < wrapped.length ? wrapped[row] : "";
+      out.push(`  ${theme.accentAlt}${glyph}${ansi.reset}  ${text}`);
+    }
+    return out;
   }
 
   #renderDetail(cols: number, rows: number): string[] {
@@ -647,10 +1021,16 @@ export class App {
     const steps: string[] = JSON.parse(r.instructions || "[]");
     if (steps.length) {
       lines.push(`${ansi.bold}${theme.accent}Instructions${ansi.reset}`);
+      // Scaled step numbers (see #renderScaledStep / bigNumber.ts) are built
+      // but disabled for now — revisit later rather than wire back in here.
       steps.forEach((s, i) => {
         const wrapped = wrap(s, width - 5);
         wrapped.forEach((w, j) => {
-          lines.push(j === 0 ? `  ${theme.accentAlt}${String(i + 1).padStart(2)}.${ansi.reset} ${w}` : `      ${w}`);
+          lines.push(
+            j === 0
+              ? `  ${theme.accentAlt}${String(i + 1).padStart(2)}.${ansi.reset} ${w}`
+              : `      ${w}`,
+          );
         });
         lines.push("");
       });
@@ -668,6 +1048,7 @@ export class App {
     const foot = ` ${theme.accent}↑↓/jk${ansi.reset} ${theme.muted}scroll${ansi.reset}` +
       sep + `${theme.accent}y${ansi.reset} ${theme.muted}copy url${ansi.reset}` +
       sep + `${theme.accent}^A${ansi.reset} ${theme.muted}note${ansi.reset}` +
+      sep + `${theme.accent}^B${ansi.reset} ${theme.muted}${this.#cooking ? "stop cooking mode" : "cooking mode"}${ansi.reset}` +
       sep + `${theme.accent}esc${ansi.reset} ${theme.muted}back${ansi.reset}` +
       sep + (this.#detailStatus
         ? `${theme.good}${this.#detailStatus}${ansi.reset}`

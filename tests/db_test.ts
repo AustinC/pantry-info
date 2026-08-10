@@ -240,6 +240,111 @@ Deno.test("adds the starred column to a database created before the feature", ()
   }
 });
 
+Deno.test("distinctIngredientNames lists each normalised name once, most-used first", () => {
+  const { db, cleanup } = tmpDb();
+  try {
+    db.upsertRecipe(makeRecipe("1", "Puttanesca", ["2 anchovy fillets", "1 cup olives, pitted"]));
+    db.upsertRecipe(makeRecipe("2", "Salad Niçoise", ["3 anchovy fillets", "2 eggs"]));
+    db.upsertRecipe(makeRecipe("3", "Deviled Eggs", ["6 eggs"]));
+
+    const names = db.distinctIngredientNames();
+    // anchovy and egg tie at count 2; ties break alphabetically.
+    assertEquals(names.map((n) => n.nameNorm), ["anchovy", "egg", "olive"]);
+    assertEquals(names.find((n) => n.nameNorm === "egg")!.count, 2);
+    assertEquals(names.find((n) => n.nameNorm === "olive")!.count, 1);
+  } finally {
+    cleanup();
+  }
+});
+
+Deno.test("recipesByIngredientNames ranks by percentage of ingredients on hand", () => {
+  const { db, cleanup } = tmpDb();
+  try {
+    // 2/2 ingredients on hand — a full match despite being a small recipe.
+    db.upsertRecipe(makeRecipe("1", "Anchovy Toast", ["2 anchovy fillets", "1 slice bread"]));
+    // 1/3 on hand — matches, but weakly.
+    db.upsertRecipe(makeRecipe("2", "Puttanesca", [
+      "2 anchovy fillets", "1 cup olives", "3 cloves garlic",
+    ]));
+    // Uses none of the picked ingredients — must not appear at all.
+    db.upsertRecipe(makeRecipe("3", "Scrambled Eggs", ["2 eggs"]));
+
+    const ranked = db.recipesByIngredientNames(["anchovy", "bread"]);
+    assertEquals(ranked.map((r) => r.title), ["Anchovy Toast", "Puttanesca"]);
+    assertEquals(ranked[0].matched, 2);
+    assertEquals(ranked[0].total, 2);
+    assertEquals(ranked[0].missing, []);
+    assertEquals(ranked[1].matched, 1);
+    assertEquals(ranked[1].total, 3);
+    assertEquals(new Set(ranked[1].missing), new Set(["olive", "garlic"]));
+  } finally {
+    cleanup();
+  }
+});
+
+Deno.test("recipesByIngredientNames returns nothing for an empty selection", () => {
+  const { db, cleanup } = tmpDb();
+  try {
+    db.upsertRecipe(makeRecipe("1", "Anchovy Toast", ["2 anchovy fillets"]));
+    assertEquals(db.recipesByIngredientNames([]), []);
+  } finally {
+    cleanup();
+  }
+});
+
+Deno.test("recipesByIngredientNames lists each missing ingredient once", () => {
+  const { db, cleanup } = tmpDb();
+  try {
+    // "onion" appears twice — once for the filling, once for the garnish.
+    db.upsertRecipe(makeRecipe("1", "Stuffed Peppers", [
+      "1 onion, diced", "1 onion, sliced for garnish", "1 pound ground beef",
+    ]));
+    const [r] = db.recipesByIngredientNames(["beef"]); // "ground" is stripped as a prep word
+    assertEquals(r.missing, ["onion"]);
+  } finally {
+    cleanup();
+  }
+});
+
+Deno.test("the have-ingredients list persists across Db instances", () => {
+  const dir = Deno.makeTempDirSync({ prefix: "pantry-have-" });
+  Deno.env.set("PANTRY_INFO_DIR", dir);
+  const path = `${dir}/have.db`;
+  try {
+    const first = new Db(path);
+    assertEquals(first.getHaveIngredients(), []);
+    first.addHaveIngredient("garlic");
+    first.addHaveIngredient("anchovy");
+    assertEquals(first.getHaveIngredients(), ["garlic", "anchovy"]); // insertion order
+    first.close();
+
+    // A fresh Db instance — simulating a relaunch of the app — sees the same list.
+    const second = new Db(path);
+    assertEquals(second.getHaveIngredients(), ["garlic", "anchovy"]);
+    second.removeHaveIngredient("garlic");
+    assertEquals(second.getHaveIngredients(), ["anchovy"]);
+    second.close();
+
+    const third = new Db(path);
+    assertEquals(third.getHaveIngredients(), ["anchovy"]);
+    third.close();
+  } finally {
+    Deno.removeSync(dir, { recursive: true });
+  }
+});
+
+Deno.test("adding the same have-ingredient twice does not duplicate or reorder it", () => {
+  const { db, cleanup } = tmpDb();
+  try {
+    db.addHaveIngredient("garlic");
+    db.addHaveIngredient("onion");
+    db.addHaveIngredient("garlic"); // re-adding must not move it to the end
+    assertEquals(db.getHaveIngredients(), ["garlic", "onion"]);
+  } finally {
+    cleanup();
+  }
+});
+
 Deno.test("extracts an id even from a slugless cached URL", () => {
   const { db, cleanup } = tmpDb();
   try {

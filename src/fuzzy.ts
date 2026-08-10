@@ -104,6 +104,41 @@ function walk(
   return { score, hits };
 }
 
+export interface StringMatch {
+  text: string;
+  score: number;
+  hits: number[];
+}
+
+/**
+ * Rank plain strings against a query, using the same subsequence scoring as row
+ * search. Backs the ingredient-search picker, where the candidates are bare
+ * ingredient names rather than whole recipes.
+ */
+export function rankStrings(items: string[], query: string): StringMatch[] {
+  const terms = query.trim().toLowerCase().split(/\s+/).filter(Boolean);
+  if (terms.length === 0) {
+    return items.map((text) => ({ text, score: 0, hits: [] }));
+  }
+
+  const out: StringMatch[] = [];
+  for (const text of items) {
+    let total = 0;
+    let hits: number[] = [];
+    let allTermsMatched = true;
+    for (const term of terms) {
+      const r = scoreTerm(term, text);
+      if (!r) { allTermsMatched = false; break; }
+      total += r.score;
+      hits = hits.concat(r.hits);
+    }
+    if (!allTermsMatched) continue;
+    out.push({ text, score: total, hits: [...new Set(hits)].sort((a, b) => a - b) });
+  }
+  out.sort((a, b) => b.score - a.score || a.text.localeCompare(b.text));
+  return out;
+}
+
 interface Field {
   text: string;
   weight: number;
