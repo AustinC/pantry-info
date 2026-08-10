@@ -185,6 +185,32 @@ Deno.test("notes save, clear, and reach the search index", () => {
   }
 });
 
+Deno.test("setTitle renames a recipe and reaches the search index", () => {
+  const { db, cleanup } = tmpDb();
+  try {
+    const id = db.upsertRecipe(makeRecipe("1", "Puttanesca", ["1 cup olives"]));
+    db.setTitle(id, "  Mum's Puttanesca  ");
+    assertEquals(db.getRecipe(id)!.title, "Mum's Puttanesca");
+    assertEquals(db.searchIndex()[0].title, "Mum's Puttanesca");
+  } finally {
+    cleanup();
+  }
+});
+
+Deno.test("a renamed title survives re-scraping the recipe", () => {
+  const { db, cleanup } = tmpDb();
+  try {
+    const id = db.upsertRecipe(makeRecipe("1", "Puttanesca", ["1 cup olives"]));
+    db.setTitle(id, "Mum's Puttanesca");
+    // Re-scraping updates the site's fields; the user's rename must survive it
+    // exactly like a star or a note does — same "user annotation" contract.
+    db.upsertRecipe(makeRecipe("1", "Puttanesca", ["1 cup olives", "2 anchovy fillets"]));
+    assertEquals(db.getRecipe(id)!.title, "Mum's Puttanesca");
+  } finally {
+    cleanup();
+  }
+});
+
 Deno.test("a note survives re-scraping the recipe", () => {
   const { db, cleanup } = tmpDb();
   try {
@@ -229,11 +255,19 @@ Deno.test("adds the starred column to a database created before the feature", ()
     assertEquals(db.toggleStar(id), true);
     db.setNote(id, "works after migrating");
     assertEquals(db.getRecipe(id)!.note, "works after migrating");
+
+    // title_custom is a later migration than starred/note — added to the same
+    // pre-migration table to confirm migrations compose, not just apply solo.
+    assertEquals(db.getRecipe(id)!.title_custom, 0);
+    db.setTitle(id, "Renamed After Migrating");
+    assertEquals(db.getRecipe(id)!.title, "Renamed After Migrating");
+    assertEquals(db.getRecipe(id)!.title_custom, 1);
     db.close();
 
     // Re-opening an already-migrated database must be a no-op, not an error.
     const again = new Db(path);
     assertEquals(again.getRecipe(id)!.note, "works after migrating");
+    assertEquals(again.getRecipe(id)!.title, "Renamed After Migrating");
     again.close();
   } finally {
     Deno.removeSync(dir, { recursive: true });

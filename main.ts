@@ -15,6 +15,7 @@ import { App } from "./src/tui/app.ts";
 import { importCachedPages, reparseOwnCache } from "./src/importer.ts";
 import { scrapeKeyword, scrapeUrl } from "./src/jobs.ts";
 import { ingestPaths } from "./src/ingest.ts";
+import { parseRecipeKeeperHtml } from "./src/recipekeeper.ts";
 import { DEFAULT_PORT, serveReceiver } from "./src/receiver.ts";
 import { dataDir, legacyChefJohnDir } from "./src/paths.ts";
 
@@ -150,6 +151,43 @@ async function main(): Promise<void> {
         }
         const n = ingestPaths(db, paths, log);
         log(`\n${n} recipe(s) imported`, n ? "ok" : "warn");
+        return;
+      }
+
+      case "import-recipekeeper": {
+        const file = argv[1];
+        const titles = argv.slice(2);
+        if (!file) {
+          console.error(
+            "usage: pantry-info import-recipekeeper <recipes.html> [title ...]\n" +
+              "  (omit titles to import every recipe in the file)",
+          );
+          Deno.exit(1);
+        }
+        let html: string;
+        try {
+          html = Deno.readTextFileSync(file);
+        } catch (e) {
+          console.error(`could not read ${file}: ${(e as Error).message}`);
+          Deno.exit(1);
+        }
+        const entries = parseRecipeKeeperHtml(html);
+        const wanted = titles.length ? new Set(titles.map((t) => t.toLowerCase())) : null;
+        let count = 0;
+        for (const { recipe, note } of entries) {
+          if (wanted && !wanted.has(recipe.title.toLowerCase())) continue;
+          const id = db.upsertRecipe(recipe);
+          if (note) db.setNote(id, note);
+          log(`+ ${recipe.title} (${recipe.ingredients.length} ingredients)`, "ok");
+          count++;
+        }
+        if (wanted && count < wanted.size) {
+          const found = new Set(entries.map((e) => e.recipe.title.toLowerCase()));
+          for (const t of titles) {
+            if (!found.has(t.toLowerCase())) log(`  not found: "${t}"`, "warn");
+          }
+        }
+        log(`\n${count} recipe(s) imported`, count ? "ok" : "warn");
         return;
       }
 

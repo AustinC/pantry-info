@@ -39,6 +39,8 @@ export interface RecipeRow {
   starred: number;
   /** The user's own free-text note, shown between ingredients and instructions. */
   note: string | null;
+  /** Set once the user renames the recipe; blocks future scrapes from reverting it. */
+  title_custom: number;
 }
 
 export interface IngredientRow {
@@ -99,6 +101,7 @@ CREATE TABLE IF NOT EXISTS recipes (
   scraped_at    TEXT NOT NULL,
   starred       INTEGER NOT NULL DEFAULT 0,
   note          TEXT,
+  title_custom  INTEGER NOT NULL DEFAULT 0,
   UNIQUE (source, source_id)
 );
 -- No index on the starred column here: on a database created before that column
@@ -180,6 +183,9 @@ export class Db {
     if (!columns.has("note")) {
       this.#db.exec("ALTER TABLE recipes ADD COLUMN note TEXT");
     }
+    if (!columns.has("title_custom")) {
+      this.#db.exec("ALTER TABLE recipes ADD COLUMN title_custom INTEGER NOT NULL DEFAULT 0");
+    }
     this.#db.exec("CREATE INDEX IF NOT EXISTS idx_recipes_starred ON recipes(starred)");
   }
 
@@ -219,8 +225,13 @@ export class Db {
     let id: number;
     if (existing) {
       // Adopt the incoming URL: a slugged canonical URL beats a rebuilt slugless one.
+      // title is skipped when the user has renamed this recipe (title_custom) —
+      // same "survives a re-scrape" contract as starred/note, just needing an
+      // explicit flag since title (unlike those) is otherwise a normal scraped field.
       this.#db.prepare(
-        `UPDATE recipes SET source=?, source_id=?, url=?, title=?, author=?, description=?,
+        `UPDATE recipes SET source=?, source_id=?, url=?,
+           title = CASE WHEN title_custom = 1 THEN title ELSE ? END,
+           author=?, description=?,
            category=?, cuisine=?, keywords=?, prep_time=?, cook_time=?, total_time=?,
            servings=?, rating=?, rating_count=?, image=?, instructions=?, nutrition=?,
            scraped_at=? WHERE id=?`,
@@ -357,6 +368,16 @@ export class Db {
   setNote(id: number, note: string | null): void {
     const trimmed = note?.trim();
     this.#db.prepare("UPDATE recipes SET note = ? WHERE id = ?").run(trimmed || null, id);
+  }
+
+  /**
+   * Caller is expected to have already rejected an empty title. Marks the
+   * title as user-owned, so a future re-scrape of this recipe won't revert it
+   * back to whatever the site currently calls it.
+   */
+  setTitle(id: number, title: string): void {
+    this.#db.prepare("UPDATE recipes SET title = ?, title_custom = 1 WHERE id = ?")
+      .run(title.trim(), id);
   }
 
   searchIndex(): SearchRow[] {

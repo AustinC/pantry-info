@@ -36,12 +36,19 @@ import {
   write,
 } from "./term.ts";
 
-type Mode = "search" | "detail" | "scrape" | "prompt" | "note" | "ingredients";
+type Mode = "search" | "detail" | "scrape" | "prompt" | "note" | "ingredients" | "editTitle";
 
 interface NoteEdit {
   recipeId: number;
   title: string;
   text: string;
+}
+
+interface TitleEdit {
+  recipeId: number;
+  text: string;
+  /** Shown in place of the hint when the current text can't be saved. */
+  warning: string;
 }
 
 interface LogLine {
@@ -88,6 +95,7 @@ export class App {
   #abort: AbortController | null = null;
   #prompt: PromptState | null = null;
   #note: NoteEdit | null = null;
+  #titleEdit: TitleEdit | null = null;
   #quit = false;
 
   /** Local endpoint for the browser extension, toggled with Ctrl-E. */
@@ -175,6 +183,7 @@ export class App {
   // -- input ---------------------------------------------------------------
 
   #handleKey(k: Key): void {
+    if (this.#mode === "editTitle") return this.#handleEditTitleKey(k);
     if (this.#mode === "note") return this.#handleNoteKey(k);
     if (this.#mode === "ingredients") return this.#handleIngredientKey(k);
     if (this.#mode === "prompt") return this.#handlePromptKey(k);
@@ -246,6 +255,7 @@ export class App {
     if (k.ch === "y" || (k.ctrl && k.name === "y")) return this.#copyUrl();
     if (k.ctrl && k.name === "a") return this.#editNote();
     if (k.ctrl && k.name === "b") return this.#toggleCookingMode();
+    if (k.ctrl && k.name === "r") return this.#editTitle();
     this.#detailStatus = ""; // any other key clears the last message
 
     const step = (n: number) => {
@@ -344,6 +354,42 @@ export class App {
     } else {
       this.#detailStatus = "note discarded";
     }
+  }
+
+  #editTitle(): void {
+    if (!this.#detail) return;
+    this.#titleEdit = { recipeId: this.#detail.recipe.id, text: this.#detail.recipe.title, warning: "" };
+    this.#mode = "editTitle";
+  }
+
+  #handleEditTitleKey(k: Key): void {
+    const t = this.#titleEdit!;
+    if ((k.ctrl && k.name === "c") || k.name === "escape") {
+      this.#titleEdit = null;
+      this.#mode = "detail";
+      this.#detailStatus = "title edit cancelled";
+      return;
+    }
+    if (k.name === "enter") {
+      const trimmed = t.text.trim();
+      if (!trimmed) { t.warning = "title can't be empty"; return; }
+      this.#db.setTitle(t.recipeId, trimmed);
+      // Re-read so the open recipe reflects the change immediately, and
+      // reload the index so the new title shows up back in search results.
+      const recipe = this.#db.getRecipe(t.recipeId);
+      if (recipe && this.#detail) this.#detail.recipe = recipe;
+      this.#reloadIndex();
+      this.#titleEdit = null;
+      this.#mode = "detail";
+      this.#detailStatus = "title updated";
+      return;
+    }
+
+    t.warning = ""; // any further edit clears a stale "can't be empty" warning
+    if (k.name === "backspace") { t.text = t.text.slice(0, -1); return; }
+    if (k.ctrl && k.name === "u") { t.text = ""; return; }
+    if (k.ctrl && k.name === "w") { t.text = t.text.replace(/\s*\S+\s*$/, ""); return; }
+    if (k.ch && k.ch >= " ") t.text += k.ch;
   }
 
   #move(delta: number): void {
@@ -686,7 +732,9 @@ export class App {
 
   #render(): void {
     const { cols, rows } = size();
-    const body = this.#mode === "note"
+    const body = this.#mode === "editTitle"
+      ? this.#renderEditTitle(cols, rows)
+      : this.#mode === "note"
       ? this.#renderNote(cols, rows)
       : this.#mode === "ingredients"
       ? this.#renderIngredients(cols, rows)
@@ -1048,6 +1096,7 @@ export class App {
     const foot = ` ${theme.accent}↑↓/jk${ansi.reset} ${theme.muted}scroll${ansi.reset}` +
       sep + `${theme.accent}y${ansi.reset} ${theme.muted}copy url${ansi.reset}` +
       sep + `${theme.accent}^A${ansi.reset} ${theme.muted}note${ansi.reset}` +
+      sep + `${theme.accent}^R${ansi.reset} ${theme.muted}rename${ansi.reset}` +
       sep + `${theme.accent}^B${ansi.reset} ${theme.muted}${this.#cooking ? "stop cooking mode" : "cooking mode"}${ansi.reset}` +
       sep + `${theme.accent}esc${ansi.reset} ${theme.muted}back${ansi.reset}` +
       sep + (this.#detailStatus
@@ -1121,6 +1170,27 @@ export class App {
       ? "^S save · esc discard · ↵ newline · ^W word · ^U clear (empty note deletes it)"
       : "^S save · esc discard · ↵ newline";
     out.push(` ${theme.muted}${truncate(hint, cols - 2)}${ansi.reset}`);
+    return out.slice(0, rows);
+  }
+
+  #renderEditTitle(cols: number, rows: number): string[] {
+    const t = this.#titleEdit!;
+    const out: string[] = [];
+    const rule = theme.faint + "─".repeat(cols) + ansi.reset;
+
+    out.push(this.#header(cols));
+    out.push(rule);
+    out.push(` ${theme.accentAlt}Edit title${ansi.reset}`);
+    out.push("");
+    out.push(`  ${theme.accent}❯${ansi.reset} ${truncate(t.text, cols - 6)}${theme.accent}▏${ansi.reset}`);
+
+    for (let i = out.length; i < rows - 2; i++) out.push("");
+
+    out.push(rule);
+    const hint = t.warning
+      ? `${theme.bad}${t.warning}${ansi.reset}`
+      : `${theme.muted}↵ save · esc cancel · ^U clear · ^W word${ansi.reset}`;
+    out.push(` ${hint}`);
     return out.slice(0, rows);
   }
 

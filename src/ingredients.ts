@@ -262,6 +262,15 @@ export function parseIngredient(raw: string): ParsedIngredient {
   const original = raw.trim();
   let text = preclean(original);
 
+  // Some sources glue the leading quantity to what follows: "3pounds russet
+  // potatoes", "2tablespoons kosher salt". Split only the leading token, so a
+  // name that happens to start with a digit-letter run elsewhere is untouched.
+  text = text.replace(/^(\d+(?:\.\d+)?)([a-zA-Z])/, "$1 $2");
+  // Likewise a glued numeric range: "3-4 cloves garlic" -> "3 to 4 cloves
+  // garlic". Both sides must be plain digits, so a size like "1-inch" (whose
+  // right side is a word, not a number) is correctly left alone.
+  text = text.replace(/^(\d+)-(\d+)(?=\s|$)/, "$1 to $2");
+
   const optional = /\boptional\b/i.test(text);
 
   // Pull out a package size: "1 (14.5 ounce) can diced tomatoes"
