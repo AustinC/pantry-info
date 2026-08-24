@@ -36,13 +36,7 @@ import {
   write,
 } from "./term.ts";
 
-type Mode = "search" | "detail" | "scrape" | "prompt" | "note" | "ingredients" | "editTitle";
-
-interface NoteEdit {
-  recipeId: number;
-  title: string;
-  text: string;
-}
+type Mode = "search" | "detail" | "scrape" | "prompt" | "ingredients" | "editTitle";
 
 interface TitleEdit {
   recipeId: number;
@@ -94,7 +88,6 @@ export class App {
   #busy = false;
   #abort: AbortController | null = null;
   #prompt: PromptState | null = null;
-  #note: NoteEdit | null = null;
   #titleEdit: TitleEdit | null = null;
   #quit = false;
 
@@ -156,7 +149,7 @@ export class App {
     try {
       this.#render();
       for await (const key of keyStream()) {
-        this.#handleKey(key);
+        await this.#handleKey(key);
         if (this.#quit) break;
         this.#render();
       }
@@ -182,12 +175,11 @@ export class App {
 
   // -- input ---------------------------------------------------------------
 
-  #handleKey(k: Key): void {
+  async #handleKey(k: Key): Promise<void> {
     if (this.#mode === "editTitle") return this.#handleEditTitleKey(k);
-    if (this.#mode === "note") return this.#handleNoteKey(k);
     if (this.#mode === "ingredients") return this.#handleIngredientKey(k);
     if (this.#mode === "prompt") return this.#handlePromptKey(k);
-    if (this.#mode === "detail") return this.#handleDetailKey(k);
+    if (this.#mode === "detail") return await this.#handleDetailKey(k);
     if (this.#mode === "scrape") return this.#handleScrapeKey(k);
     return this.#handleSearchKey(k);
   }
@@ -241,7 +233,7 @@ export class App {
     }
   }
 
-  #handleDetailKey(k: Key): void {
+  async #handleDetailKey(k: Key): Promise<void> {
     if ((k.ctrl && k.name === "c")) { this.#quit = true; return; }
     if (k.name === "escape" || k.name === "backspace" || (k.ch === "q")) {
       this.#mode = this.#detailReturnTo;
@@ -253,8 +245,8 @@ export class App {
     if (!this.#detail) return;
 
     if (k.ch === "y" || (k.ctrl && k.name === "y")) return this.#copyUrl();
-    if (k.ctrl && k.name === "a") return this.#editNote();
-    if (k.ctrl && k.name === "b") return this.#toggleCookingMode();
+    if (k.ctrl && k.name === "a") return await this.#editNote();
+    if (k.ctrl && k.name === "x") return this.#toggleCookingMode();
     if (k.ctrl && k.name === "r") return this.#editTitle();
     this.#detailStatus = ""; // any other key clears the last message
 
@@ -311,48 +303,61 @@ export class App {
   }
 
   /**
-   * Note editor input. Editing happens at the end of the buffer — there is no
-   * cursor to move — which keeps this simple and is enough for short notes.
+   * Edit the note in $VISUAL/$EDITOR (falling back to nano) as a real external
+   * editor session, suspending the TUI for its duration — far more capable
+   * than reimplementing text editing here.
    */
-  #handleNoteKey(k: Key): void {
-    const n = this.#note!;
-    if (k.ctrl && k.name === "c") { this.#closeNote(false); return; }
-    if (k.name === "escape") { this.#closeNote(false); return; }
-    if (k.ctrl && k.name === "s") { this.#closeNote(true); return; }
-
-    if (k.ctrl && k.name === "u") { n.text = ""; return; }
-    if (k.ctrl && k.name === "w") {
-      n.text = n.text.replace(/\s*\S+\s*$/, "");
-      return;
-    }
-    if (k.name === "backspace") { n.text = n.text.slice(0, -1); return; }
-    if (k.name === "enter") { n.text += "\n"; return; }
-    if (k.ch && k.ch >= " ") n.text += k.ch;
-  }
-
-  /** Open the note editor for the recipe currently open in detail view. */
-  #editNote(): void {
+  async #editNote(): Promise<void> {
     if (!this.#detail) return;
     const { id, title, note } = this.#detail.recipe;
-    this.#note = { recipeId: id, title, text: note ?? "" };
-    this.#mode = "note";
-  }
 
-  #closeNote(save: boolean): void {
-    const n = this.#note;
-    this.#note = null;
-    this.#mode = "detail";
-    if (!n) return;
+    const editorCmd = (Deno.env.get("VISUAL") || Deno.env.get("EDITOR") || "nano").trim();
+    const [cmd, ...cmdArgs] = editorCmd.split(/\s+/);
 
-    if (save) {
-      this.#db.setNote(n.recipeId, n.text);
+    let runAllowed = false;
+    try {
+      runAllowed = Deno.permissions.querySync({ name: "run", command: cmd }).state === "granted";
+    } catch { /* denied */ }
+    if (!runAllowed) {
+      this.#detailStatus = `note editing needs permission to run "${cmd}" (see --allow-run)`;
+      return;
+    }
+
+    const tmp = await Deno.makeTempFile({ prefix: "pantry-note-", suffix: ".md" });
+    try {
+      await Deno.writeTextFile(tmp, note ?? "");
+
+      Deno.stdin.setRaw(false);
+      exitAlt();
+      let success = false;
+      try {
+        const child = new Deno.Command(cmd, {
+          args: [...cmdArgs, tmp],
+          stdin: "inherit",
+          stdout: "inherit",
+          stderr: "inherit",
+        }).spawn();
+        success = (await child.status).success;
+      } catch (e) {
+        this.#detailStatus = `couldn't launch "${cmd}" — ${(e as Error).message}`;
+      } finally {
+        enterAlt();
+        Deno.stdin.setRaw(true);
+      }
+      if (!success) {
+        if (!this.#detailStatus) this.#detailStatus = "note editing cancelled";
+        return;
+      }
+
+      const text = (await Deno.readTextFile(tmp)).replace(/\s+$/, "");
+      this.#db.setNote(id, text);
       this.#reloadIndex();
-      this.#detailStatus = n.text.trim() ? `note saved for ${n.title}` : `note cleared for ${n.title}`;
       // Re-read so the saved note shows immediately.
-      const recipe = this.#db.getRecipe(n.recipeId);
+      const recipe = this.#db.getRecipe(id);
       if (recipe && this.#detail) this.#detail.recipe = recipe;
-    } else {
-      this.#detailStatus = "note discarded";
+      this.#detailStatus = text ? `note saved for ${title}` : `note cleared for ${title}`;
+    } finally {
+      await Deno.remove(tmp).catch(() => {});
     }
   }
 
@@ -734,8 +739,6 @@ export class App {
     const { cols, rows } = size();
     const body = this.#mode === "editTitle"
       ? this.#renderEditTitle(cols, rows)
-      : this.#mode === "note"
-      ? this.#renderNote(cols, rows)
       : this.#mode === "ingredients"
       ? this.#renderIngredients(cols, rows)
       : this.#mode === "detail"
@@ -1097,7 +1100,7 @@ export class App {
       sep + `${theme.accent}y${ansi.reset} ${theme.muted}copy url${ansi.reset}` +
       sep + `${theme.accent}^A${ansi.reset} ${theme.muted}note${ansi.reset}` +
       sep + `${theme.accent}^R${ansi.reset} ${theme.muted}rename${ansi.reset}` +
-      sep + `${theme.accent}^B${ansi.reset} ${theme.muted}${this.#cooking ? "stop cooking mode" : "cooking mode"}${ansi.reset}` +
+      sep + `${theme.accent}^X${ansi.reset} ${theme.muted}${this.#cooking ? "stop cooking mode" : "cooking mode"}${ansi.reset}` +
       sep + `${theme.accent}esc${ansi.reset} ${theme.muted}back${ansi.reset}` +
       sep + (this.#detailStatus
         ? `${theme.good}${this.#detailStatus}${ansi.reset}`
@@ -1135,41 +1138,6 @@ export class App {
         ? ` ${theme.warn}working…${ansi.reset} ${theme.muted}esc to abort${ansi.reset}`
         : ` ${theme.accent}↵/esc${ansi.reset} ${theme.muted}back to search${ansi.reset}`,
     );
-    return out.slice(0, rows);
-  }
-
-  #renderNote(cols: number, rows: number): string[] {
-    const n = this.#note!;
-    const out: string[] = [];
-    const width = Math.min(cols - 4, 90);
-
-    out.push(this.#header(cols));
-    out.push(theme.faint + "─".repeat(cols) + ansi.reset);
-    out.push(` ${theme.accentAlt}Note${ansi.reset} ${theme.muted}on${ansi.reset} ` +
-      `${ansi.bold}${truncate(n.title, cols - 12)}${ansi.reset}`);
-    out.push("");
-
-    // Trailing "" keeps a final newline visible as an empty line to type on.
-    const paragraphs = n.text.split("\n");
-    const body: string[] = [];
-    for (const p of paragraphs) {
-      const wrapped = p === "" ? [""] : wrap(p, width);
-      body.push(...wrapped);
-    }
-    const cursor = `${theme.accent}▏${ansi.reset}`;
-    if (body.length === 0) body.push("");
-    body[body.length - 1] = body[body.length - 1] + cursor;
-
-    const viewH = rows - out.length - 2;
-    const view = body.slice(Math.max(0, body.length - viewH));
-    for (const l of view) out.push(`  ${l}`);
-    for (let i = view.length; i < viewH; i++) out.push("");
-
-    out.push(theme.faint + "─".repeat(cols) + ansi.reset);
-    const hint = n.text.trim()
-      ? "^S save · esc discard · ↵ newline · ^W word · ^U clear (empty note deletes it)"
-      : "^S save · esc discard · ↵ newline";
-    out.push(` ${theme.muted}${truncate(hint, cols - 2)}${ansi.reset}`);
     return out.slice(0, rows);
   }
 
