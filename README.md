@@ -1,7 +1,7 @@
 # pantry-info
 
 A terminal recipe manager. Your recipes are stored in a local SQLite
-database. Type to fuzzy-search them, star favourites, add your own notes, or find
+database. Type to fuzzy-search them, star favorites, add your own notes, or find
 what you can cook with the ingredients you have.
 
 <img width="800" alt="Screenshot_2026-11-06_22-29-40" src="https://github.com/user-attachments/assets/18d041ad-174a-4295-a642-175ae7cd1d24" />
