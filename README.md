@@ -1,288 +1,246 @@
 # pantry-info
 
-A keyword-driven recipe collector with a text UI.
-Find recipes by keyword search, or just start listing ingredients you want to use.
+A terminal recipe manager. Your recipes are stored in a local SQLite
+database. Type to fuzzy-search them, star favourites, add your own notes, or find
+what you can cook with the ingredients you have.
 
-<img width="1886" height="649" alt="Screenshot_2026-11-06_22-12-47" src="https://github.com/user-attachments/assets/d81412c8-5003-482c-95de-4d5422a73757" />
-
-
-You type a keyword. It fuzzy-searches your local SQLite recipe database. If what you
-want isn't there yet, one keystroke scrapes a few more recipes by Chef John for that
-keyword and adds them. Over time the database grows along the axes you actually cook.
-
-Ingredients are stored with the **amount separated from the ingredient name**, so a
-future "what can I make with anchovies and olives?" search is a plain SQL join.
-
-## Quick start
+Each ingredient's amount is stored separately from its name, so "what can I make
+with anchovies and olives?" is a plain SQL join.
 
 ```bash
-cd pantry-info
-deno task start
+deno task start     # or ./run.sh
+deno task test
 ```
 
-On first run with an empty database, pantry-info imports any recipe HTML already
-cached by the companion Python scraper at `~/box/chefjohn/pages` — no network needed.
+## Searching
 
-## The UI
+Results update as you type. The header shows database totals.
 
 ```
-pantry-info                    12 recipes · 168 ingredients · 20 queued · scrape 3
-────────────────────────────────────────────────────────────────────────────────
-❯ pasta▏
-────────────────────────────────────────────────────────────────────────────────
-❯ Chef John's Pasta Primavera                     ★4.4  45 min
-  Chef John's BLT Pasta                           ★4.7  40 min
-  Chef John's Creamy Mushroom Pasta               ★4.6  30 min
-────────────────────────────────────────────────────────────────────────────────
- ↵ view · ^S scrape 3 · ^O url · ^N count · ^R reload · esc quit
+pantry-info                  48 recipes · 612 ingredients · 20 queued · scrape 3
+─────────────────────────────────────────────────────────────────────────────────
+❯ musroom pas▏
+─────────────────────────────────────────────────────────────────────────────────
+❯★ Chef John's Creamy Mushroom Pasta                                   30 min
+   Mushroom Bolognese                                                  1 hr 10 min
+   Pasta with Mushrooms and Peas                                       25 min
+─────────────────────────────────────────────────────────────────────────────────
+ ↵ view · ^T star · ^G ingredients · ^S scrape 3 · ^O url · ^E receive · ^N count
+```
+
+Matching is fzf-style: the query's letters only need to appear in order, so
+`musroom` still finds "Mushroom". With several words, every word must match, but
+each can match a different field. A hit in a higher-weighted field ranks higher:
+
+| Field | Weight | | Field | Weight |
+| --- | --- | --- | --- | --- |
+| title | 1.0 | | ingredient names | 0.45 |
+| your note | 0.6 | | site keywords | 0.4 |
+| category, cuisine | 0.55 | | description | 0.22 |
+
+Instructions are not searched. With an empty query, starred recipes are listed
+first, then the highest rated. Stars don't change ranked search results.
+
+| Key | Action |
+| --- | --- |
+| *type* · `^W` · `^U` | edit the query (delete a word / clear it) |
+| `↑` `↓` `PgUp` `PgDn` | move the selection |
+| `Enter` | open the recipe |
+| `^T` | star or unstar |
+| `^G` | switch to [ingredient search](#ingredient-search) |
+| `^E` | start/stop the [browser extension](#browser-extension) receiver |
+| `^O` | download a recipe from a URL |
+| `^S` · `^N` | [scrape](#scraping-allrecipes) N recipes for the query · set N (default 3) |
+| `^R` | reload the index |
+| `Esc` | quit |
+
+## Viewing a recipe
+
+```
+★ Chef John's Creamy Mushroom Pasta
+Chef John  ·  30 min  ·  serves 4  ·  Main Dishes
+https://www.allrecipes.com/recipe/284761/
+
+Ingredients
+  12 ounces         rigatoni
+  2 tablespoons     butter
+  1 pound           cremini mushrooms, sliced
+  3 cloves          garlic, minced
+  1 cup             heavy cream
+                    salt and freshly ground black pepper, to taste
+
+Note
+  ▏ Double the garlic. Good with a splash of white wine before the cream.
+
+Instructions
+   1. Bring a large pot of salted water to a boil. Cook the rigatoni until
+      just tender, about 11 minutes. Reserve 1 cup of the pasta water.
+   2. Melt butter in a large skillet over medium-high heat…
+─────────────────────────────────────────────────────────────────────────────────
+ ↑↓/jk scroll · y copy url · ^A note · ^R rename · ^X cooking mode · esc back · 0%
 ```
 
 | Key | Action |
 | --- | --- |
-| *type* | fuzzy-search the local database as you type |
-| `↑` `↓` `PgUp` `PgDn` | move the selection |
-| `Enter` | open the recipe (scroll with `↑↓` / `j` `k` / space) |
-| `y` | *(in a recipe)* copy its URL to the clipboard |
-| `Ctrl-T` | star/unstar the highlighted (or open) recipe |
-| `Ctrl-A` | *(in a recipe)* add or edit a personal note |
-| `Ctrl-G` | switch to ingredient search — find recipes by what you have on hand |
-| `Ctrl-E` | start/stop the local receiver for the browser extension |
-| `Ctrl-S` | scrape N more Chef John recipes for the current keyword |
-| `Ctrl-O` | paste a recipe URL to download directly |
-| `Ctrl-N` | change how many recipes a scrape pulls (default 3) |
-| `Ctrl-R` | reload the index |
-| `Ctrl-W` / `Ctrl-U` | delete word / clear the query |
-| `Esc` | back, or quit from the search screen |
+| `↑` `↓` `j` `k` | scroll a line (`PgUp` `PgDn` space scroll a page) |
+| `y` | copy the URL (tries `wl-copy`, `xclip`, `xsel` and `pbcopy`, then falls back to OSC 52, which also works over SSH and in tmux) |
+| `^A` | add or edit a personal note, shown above the instructions |
+| `^R` | rename the recipe |
+| `^X` | cooking mode: stops the screen from sleeping for up to 90 minutes, using `systemd-inhibit` (Linux only) |
+| `Esc` `q` | back to the list (also turns off cooking mode) |
 
-### Stars and notes
+## Ingredient search
 
-`Ctrl-T` toggles a star (★) on the highlighted or open recipe. Inside a recipe,
-`Ctrl-A` opens an editor for a free-text note, shown between the ingredients and the
-instructions.
+`Ctrl-G` switches to building a list of ingredients you have. Recipes are ranked
+by the share of their ingredients that you have, so a short recipe you can make
+completely ranks above a long one you're mostly missing. If a recipe is missing
+four ingredients or fewer, they're listed next to its title.
 
-Starring only changes the **default listing** — clear the search box and starred
-recipes sort first. It does not bias ranked search results: typing a query ranks
-purely on match quality, so an unstarred recipe that matches well still outranks a
-starred one that matches poorly. The idea is "show me my favourites when I'm
-browsing", not "favourites always win".
-
-### Ingredient search
-
-`Ctrl-G` switches from text search to a second mode: instead of typing a recipe
-keyword, you build up a "have" list of ingredients and see which recipes those best
-cover.
-
-
-
-- Type to fuzzy-search ingredient *names* (not amounts) — `sugar` matches every kind
-  you've got in the database (`brown sugar`, `powdered sugar`, ...) as separate,
-  individually pickable candidates.
-- `↑`/`↓` move through candidates, `Enter` adds or removes the highlighted one.
-- `Tab` moves focus down to the ranked recipe list; `Enter` there opens the recipe.
-- `Esc` returns to text search at any point.
-
-As you add ingredients, the recipe list re-sorts by what percentage of each recipe's
-ingredients are covered by your "have" list — a two-ingredient recipe you can fully
-make outranks a ten-ingredient recipe you're mostly missing. When a recipe is only
-missing a handful of things (four or fewer), they're listed right next to its title
-so you can see at a glance what a supermarket run would need to cover.
-
-The "have" list is saved to the database, so it's still there next time you open
-pantry-info — this is meant to model your actual pantry, not a one-off search.
-
-### Clipboard
-
-`y` in a recipe copies its URL. pantry-info tries `wl-copy`, `xclip`, `xsel` and
-`pbcopy` first, and falls back to an OSC 52 escape sequence — which asks the terminal
-itself to set the clipboard, so it needs no permissions and works over SSH. Inside
-tmux the sequence is wrapped in a DCS passthrough; if it does nothing, your terminal
-doesn't honour OSC 52, so install one of the helpers above.
-
-The `start` task grants `--allow-run` for exactly those four binaries. Deno prints a
-one-line notice for any that aren't installed; that's harmless. Permission is checked
-with `querySync` before spawning, so a missing grant degrades to OSC 52 instead of
-raising an interactive prompt over the UI.
-
-### Search
-
-Search is fzf-style: characters must appear in order, with contiguous runs and
-word-boundary starts scoring highest, so `musroom` still finds *Creamy Mushroom
-Pasta*. Multiple words are AND-ed. Titles rank above categories, which rank above
-ingredients, which rank above descriptions.
-
-## CLI
-
-Everything the UI does is also scriptable:
-
-```bash
-deno task start                       # the TUI
-deno run -A main.ts scrape pasta -n 5 # headless keyword scrape
-deno run -A main.ts url <url>         # download one recipe
-deno run -A main.ts import [dir]      # import cached HTML (offline)
-deno run -A main.ts reparse           # re-parse own cache after a parser change
-deno run -A main.ts stats             # what's in the database
-deno run -A main.ts pantry anchovy olive   # preview of the on-hand search
+```
+pantry-info                  48 recipes · 612 ingredients · 20 queued · scrape 3
+─────────────────────────────────────────────────────────────────────────────────
+ Have (4): garlic, olive oil, anchovy, spaghetti
+─────────────────────────────────────────────────────────────────────────────────
+❯ oliv▏
+─────────────────────────────────────────────────────────────────────────────────
+❯✓ olive oil                                                              (31)
+   kalamata olive                                                          (3)
+   green olive                                                             (2)
+Recipes by % of ingredients on hand:
+  100%  Spaghetti Aglio e Olio                                          4/4
+   67%  Pasta Puttanesca  needs kalamata olive, capers, tomato          6/9
+   40%  Caesar Salad  needs romaine, parmesan, egg                      2/5
+─────────────────────────────────────────────────────────────────────────────────
+ ↵ add/remove · ↑↓ move · Tab → recipes · esc back
 ```
 
-## Browser extension (manual capture)
+Type to filter ingredient names (amounts are ignored), and press `Enter` to add or
+remove the highlighted one. `Tab` moves to the recipe list, where `Enter` opens a
+recipe. The "have" list is saved, so it acts as a record of your actual pantry.
 
-`extension/` is a Firefox add-on for pages you open yourself — an alternative to
-programmatic scraping that sidesteps rate limiting entirely, since the page is
-fetched by your own browser session.
+From the command line, `pantry` does a looser version that matches substrings
+of ingredient names:
 
-It extracts the page's schema.org JSON-LD and hands it to pantry-info **unmodified**.
-Everything downstream — ingredient splitting, dedupe, storage — runs through the same
-`buildRecipe` path as the scraper, so a manual capture and an automated scrape produce
-identical rows. Only the capture method differs.
+```
+$ deno task pantry anchovy olive
+Recipes using anchovy, olive:
 
-### Installing
+ 2/2  Pasta Puttanesca  (anchovy, kalamata olive)
+ 1/2  Olive Bread  (olive)
+```
 
-Firefox → `about:debugging#/runtime/this-firefox` → **Load Temporary Add-on** → pick
-`extension/manifest.json`. Temporary add-ons are removed when Firefox restarts; to
-install permanently, sign it with `web-ext sign` or use Firefox Developer Edition with
-`xpinstall.signatures.required=false`.
+## Adding recipes
 
-### Using it
+All of these store recipes the same way: ingredients go through the same parser,
+and a recipe that's already in the database (matched by URL) is updated rather
+than duplicated.
 
-Open a recipe, click the toolbar button, and choose one of:
-
-| Action | What it does |
+| Source | How |
 | --- | --- |
-| **Send to pantry-info** | POSTs to a local receiver — one click, straight into the database |
-| **Save .json** | Writes an export to `~/Downloads/pantry-info/<slug>.json` |
-| **Copy JSON** | Puts the export on the clipboard |
+| [Browser extension](#browser-extension) | one click on any recipe page you have open |
+| Recipe Keeper | `deno run -A main.ts import-recipekeeper recipes.html ["Title" ...]` |
+| A single URL | `Ctrl-O`, or `deno run -A main.ts url <url>` |
+| [allrecipes scraping](#scraping-allrecipes) | `Ctrl-S`, or `deno task scrape <keyword> -n 5` |
 
-For one-click sending, leave a receiver running:
+**Recipe Keeper** reads the app's `recipes.html` export, including its notes. Give
+one or more titles to import only those recipes.
 
-```bash
-deno task receive            # listens on 127.0.0.1:8787
-```
+**A single URL** works on any site whose pages include schema.org Recipe data.
 
-The popup shows `connected` when it can reach it, `offline` otherwise — saving and
-copying work either way. The port is configurable in the popup and remembered.
+### Browser extension
 
-To import files instead:
+`extension/` is a Firefox add-on that captures the recipe on the page you're
+viewing. Your browser loads the page, so there are no rate limits to deal with. It
+works on any site with schema.org Recipe data, and passes the page's JSON-LD
+through unchanged.
 
-```bash
-deno run -A main.ts import-json ~/Downloads/pantry-info/          # a whole directory
-deno run -A main.ts import-json ~/Downloads/pantry-info/pasta.json
-pbpaste | deno run -A main.ts import-json -                       # from the clipboard
-```
+**Install:** open `about:debugging#/runtime/this-firefox`, click **Load Temporary
+Add-on**, and select `extension/manifest.json`. A temporary add-on is removed when
+Firefox restarts. To keep it, sign it with `web-ext sign`.
 
-Exports include the page HTML, so `reparse` can rebuild captured recipes after a
-parser change without re-visiting the site.
+**Use:** click the toolbar button on a recipe page, then choose one of:
 
-### Permissions and safety
-
-The extension requests `activeTab` rather than access to any recipe site, so it can
-only read a page at the moment you click its button, and it holds no standing
-permission for allrecipes or anywhere else. Its only host permission is loopback.
-
-The receiver binds to `127.0.0.1` only and is unauthenticated: any local process could
-post a recipe to it. That is an acceptable trade for a personal tool whose only side
-effect is adding rows to your own database — it never reads from or returns database
-contents beyond a recipe count. Run it only while you're capturing.
-
-### Export format
+- **Send to pantry-info:** posts the recipe to a local receiver. Start it with
+  `Ctrl-E` in the UI (the header shows `◉ :8787` while it runs) or with
+  `deno task receive [-p PORT]`. The popup says `connected` or `offline`.
+- **Save .json:** writes `~/Downloads/pantry-info/<slug>.json`. Import it with
+  `deno task import-json <file|dir>`.
+- **Copy JSON:** copies the export to the clipboard. Import it with
+  `pbpaste | deno task import-json -`.
 
 ```jsonc
 {
-  "pantryInfo": 1,                    // envelope version, validated on import
-  "url": "https://…",                 // canonical URL, so captures dedupe against scrapes
+  "pantryInfo": 1,                    // envelope version
+  "url": "https://…",                 // canonical, so re-captures update in place
   "capturedAt": "2026-08-07T…",
   "jsonld": { "@type": "Recipe", … }, // verbatim from the page
   "html": "<html>…"                   // optional, enables reparse
 }
 ```
 
-Any site with schema.org Recipe markup works, not just allrecipes — and unlike the
-keyword scraper, manual capture applies no Chef John author filter, since opening the
-page is an explicit choice.
+The extension uses `activeTab`, so it can only read a page at the moment you click
+the button. Its only host permission is for `127.0.0.1`. The receiver listens on
+`127.0.0.1` only and has no authentication. Any local process can add a recipe
+through it, but it never returns database contents, only a recipe count. Leave it
+running only while you're capturing.
 
-## How scraping works
+### Scraping allrecipes
 
-allrecipes' own search is queried as `chef john <keyword>`. Results are a mix of Chef
-John's recipes and similar ones by other cooks, so every candidate page is confirmed
-against the `author` field in its schema.org JSON-LD before anything is stored.
+`Ctrl-S` searches allrecipes for `chef john <query>`, adds every result to a queue,
+and downloads the next N. It keeps only recipes whose schema.org `author` is Chef
+John. Running it again on the same keyword continues through the queue.
 
-Discovery and downloading are deliberately separated:
+The fetcher sends one request at a time with a full set of Chrome headers, and
+waits a random 2.5–6 s between requests. It backs off on 403, 429 and 5xx,
+respecting `Retry-After`. If scraping still hits a rate limit, the run stops. Try
+again a few minutes later.
 
-1. A search records **every** hit in the `discovered` table, tagged with the keyword.
-2. Each scrape run downloads only the next N unscraped candidates.
+### Other commands
 
-So running `Ctrl-S` on "pasta" repeatedly digs deeper into the same result set rather
-than re-fetching what you already have, and the queue survives across sessions.
+```bash
+deno task stats                 # counts, plus scrape history per keyword
+deno run -A main.ts reparse     # rebuild every recipe from the HTML cache after a parser change
+deno task import [dir]          # import cached HTML (default ~/box/chefjohn/pages)
+```
 
-Raw HTML is cached under the data directory, so the parser can be improved and the
-whole database rebuilt with `reparse` — no re-fetching.
-
-### Being a polite client
-
-allrecipes fingerprints requests: a bare `User-Agent` gets a 403 interstitial, while a
-complete, self-consistent Chrome header set is served normally. `src/fetcher.ts`
-therefore sends matched UA + `sec-ch-ua` + `Sec-Fetch-*` profiles, and:
-
-- issues requests **sequentially**, never concurrently
-- waits a randomised 2.5–6 s between them
-- backs off exponentially on 403/429/5xx, honouring `Retry-After`
-
-Sustained scraping still trips a rate limit eventually; the scrape reports the failure
-and stops rather than hammering. Wait a few minutes and run it again — the queue picks
-up where it left off. Pulling a handful of recipes at a time is the intended usage.
+If the database is empty when the UI starts, it first imports any cached HTML from
+`~/box/chefjohn/pages`.
 
 ## Ingredient storage
 
-This is what makes [ingredient search](#ingredient-search) possible. Each line is
-split into columns:
+Each ingredient line is split into columns:
 
-| raw | quantity | unit | pack_size | name | name_norm | note |
+| raw | qty | unit | pack | name | name_norm | note |
 | --- | --- | --- | --- | --- | --- | --- |
-| `2.5 pounds ground chuck` | 2.5 | pound | — | ground chuck | chuck | — |
-| `3 cloves garlic, coarsely chopped` | 3 | clove | — | garlic | garlic | coarsely chopped |
-| `1 (14.5 ounce) can diced tomatoes, drained` | 1 | can | 14.5 | diced tomatoes | tomato | drained |
-| `8 thick slices bacon` | 8 | slice | — | bacon | bacon | — |
-| `1½ cups whole milk` | 1.5 | cup | — | whole milk | milk | — |
+| `2.5 pounds ground chuck` | 2.5 | pound | | ground chuck | chuck | |
+| `3 cloves garlic, coarsely chopped` | 3 | clove | | garlic | garlic | coarsely chopped |
+| `1 (14.5 ounce) can diced tomatoes, drained` | 1 | can | 14.5 oz | diced tomatoes | tomato | drained |
+| `1½ cups whole milk` | 1.5 | cup | | whole milk | milk | |
 
-`name` keeps the descriptive form for display; `name_norm` is the lossy matching key —
-lowercased, singularised, with prep and size words removed — so *anchovy fillets* and
-*minced anchovies* both become `anchovy`. Section labels ("For the sauce:") are flagged
-`is_heading` and excluded from ingredient matching.
-
-The same lookup is also available as a one-off from the CLI, using loose substring
-matching against free-text ingredient names (the TUI's `Ctrl-G` picker instead matches
-`name_norm` exactly, since you select candidates from a list rather than typing them):
-
-```
-$ deno run -A main.ts pantry anchovy olive
- 2/2  Puttanesca            (anchovy, kalamata olive)
- 1/2  Olive Bread           (olive)
-```
+`name` is the full name for display. `name_norm` is the key used for matching:
+lowercase and singular, with prep and size words removed, so "anchovy fillets" and
+"minced anchovies" both become `anchovy`. Section labels like "For the sauce:" are
+flagged `is_heading` and left out of matching.
 
 ## Layout
 
 ```
 main.ts               CLI entry point and subcommands
-extension/            Firefox add-on for manual capture
-src/paths.ts          data directory resolution
 src/db.ts             schema, upserts, discovery queue, ingredient queries
 src/ingredients.ts    ingredient line parser
 src/fuzzy.ts          fzf-style ranking
-src/fetcher.ts        polite HTTP with header profiles and backoff
-src/scraper.ts        JSON-LD extraction, search, URL canonicalisation
-src/jobs.ts           keyword scrape and URL download
-src/importer.ts       offline bootstrap from cached HTML
-src/ingest.ts         browser-extension export format and import
+src/recipekeeper.ts   Recipe Keeper HTML export import
+src/ingest.ts         browser extension export format
 src/receiver.ts       localhost endpoint for the extension
-src/tui/term.ts       raw mode, key decoding, ANSI helpers
-src/tui/app.ts        the UI state machine and renderer
-tests/                unit tests (deno task test)
+src/scraper.ts        JSON-LD extraction, allrecipes search, URL canonicalisation
+src/fetcher.ts        HTTP with header profiles, delays, backoff
+src/jobs.ts           keyword scrape and single-URL download
+src/importer.ts       import from cached HTML, reparse
+src/paths.ts          data directory resolution
+src/tui/              UI: app state and rendering, terminal I/O, clipboard, cooking mode
+extension/            Firefox add-on
+tests/                unit tests
 ```
 
-No third-party dependencies: SQLite comes from Deno's built-in `node:sqlite`, and the
-UI is hand-rolled ANSI.
-
-## Data location
-
-`~/.local/share/pantry-info/` by default (`pantry.db` plus a `pages/` HTML cache).
-Override with `$PANTRY_INFO_DIR` or `$XDG_DATA_HOME`.
-
+Data is stored in `~/.local/share/pantry-info/`: `pantry.db` and a `pages/` cache
+of raw HTML. Set `$PANTRY_INFO_DIR` or `$XDG_DATA_HOME` to change the location.
