@@ -1,13 +1,13 @@
 # pantry-info
 
-claude --resume 83d8bc43-2fbc-4941-81bc-037880a6bcfd
-
 A keyword-driven recipe collector with a text UI, written in TypeScript for Deno.
 
+Recipe search by keyword:
 You type a keyword. It fuzzy-searches your local SQLite recipe database. If what you
-want isn't there yet, one keystroke scrapes a few more Chef John recipes for that
+want isn't there yet, one keystroke scrapes a few more recipes by Chef John for that
 keyword and adds them. Over time the database grows along the axes you actually cook.
 
+Recipe search by ingredients:
 Ingredients are stored with the **amount separated from the ingredient name**, so a
 future "what can I make with anchovies and olives?" search is a plain SQL join rather
 than a text scrape.
@@ -283,9 +283,3 @@ UI is hand-rolled ANSI.
 `~/.local/share/pantry-info/` by default (`pantry.db` plus a `pages/` HTML cache).
 Override with `$PANTRY_INFO_DIR` or `$XDG_DATA_HOME`.
 
-## Relationship to the Python scraper
-
-`~/box/scrape_chefjohn.py` crawls Chef John's catalogue broadly by cross-link discovery.
-pantry-info instead grows *on demand* from keywords you search for, and adds structured
-ingredients and a UI. It reads the Python scraper's HTML cache to bootstrap, but keeps
-its own database and does not modify anything under `~/box`.
