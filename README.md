@@ -1,16 +1,17 @@
 # pantry-info
 
-A keyword-driven recipe collector with a text UI, written in TypeScript for Deno.
+A keyword-driven recipe collector with a text UI.
+Find recipes by keyword search, or just start listing ingredients you want to use.
 
-Recipe search by keyword:
+<img width="1886" height="649" alt="Screenshot_2026-11-06_22-12-47" src="https://github.com/user-attachments/assets/d81412c8-5003-482c-95de-4d5422a73757" />
+
+
 You type a keyword. It fuzzy-searches your local SQLite recipe database. If what you
 want isn't there yet, one keystroke scrapes a few more recipes by Chef John for that
 keyword and adds them. Over time the database grows along the axes you actually cook.
 
-Recipe search by ingredients:
 Ingredients are stored with the **amount separated from the ingredient name**, so a
-future "what can I make with anchovies and olives?" search is a plain SQL join rather
-than a text scrape.
+future "what can I make with anchovies and olives?" search is a plain SQL join.
 
 ## Quick start
 
@@ -70,6 +71,8 @@ browsing", not "favourites always win".
 `Ctrl-G` switches from text search to a second mode: instead of typing a recipe
 keyword, you build up a "have" list of ingredients and see which recipes those best
 cover.
+
+
 
 - Type to fuzzy-search ingredient *names* (not amounts) — `sugar` matches every kind
   you've got in the database (`brown sugar`, `powdered sugar`, ...) as separate,
